@@ -36,9 +36,12 @@ lofi-node ticket list --dir ./data
 lofi-node ticket revoke <id> --dir ./data   # live sockets close with 4001
 ```
 
-The user pastes the ticket into their lofi app; the app stores it passkey-encrypted in localStorage
-and uses the ticket's URL as its sync server. Format and app-side flow:
-[app-ticket.md](app-ticket.md).
+The user pastes the ticket into their lofi app (tell them to let their password manager save it —
+the secret is shown once and the node keeps only a hash). The app never stores a ticket in
+cleartext: a sync ticket persists as a sealed record under a device-bound key and its URL becomes
+the sync server; a provision ticket is split first through the scope-down exchange — the app stores
+a derived sync ticket and keeps the provision original passkey-sealed or memory-only. Format and
+app-side flow: [app-ticket.md](app-ticket.md).
 
 ## 2. Get the app's schema into the store
 
@@ -46,7 +49,9 @@ A store with no deployed schema is unusable — client writes hang (preflight wi
 `GET <ticket.url>/store-status`, see [app-ticket.md](app-ticket.md)). Two paths publish a schema:
 
 **Primary — runtime provisioning via a provision ticket** (the lofi#109 opt-in flow): issue
-`lofi-node ticket issue --provision --label app-setup` and hand it to the app. The app (or any
+`lofi-node ticket issue --provision --label app-setup` and hand it to the app. On enrollment the app
+splits it through the scope-down exchange (everyday transport rides a derived sync ticket; admin
+capability unlocks through a passkey ceremony when provisioning actually runs). The app (or any
 jazz-tools `deploy` caller) uses the ticket URL as `serverUrl` with a placeholder admin secret — the
 gate strips inbound admin headers and injects the node's own for provision-scoped requests, so the
 real secret never leaves the node. Slice-by-slice merge deploys (`createTables` migrations, union
