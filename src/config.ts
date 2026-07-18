@@ -106,11 +106,27 @@ export function configPath(dataDir: string): string {
   return `${dataDir}/config.json`;
 }
 
+/** Tighten a path's mode. POSIX only — Windows has no chmod; there the data
+ * dir inherits the profile directory's ACLs instead. */
+async function restrictMode(path: string, mode: number): Promise<void> {
+  if (Deno.build.os === "windows") return;
+  await Deno.chmod(path, mode);
+}
+
+/** config.json and iroh.key hold the node's identity and Jazz credentials —
+ * owner-only on disk. Installs created before modes were set are healed on
+ * every load. */
+async function restrictSecretModes(dataDir: string): Promise<void> {
+  await restrictMode(dataDir, 0o700);
+  await restrictMode(configPath(dataDir), 0o600);
+}
+
 /** Read config.json (null when absent); v1 files are mapped to v2 in
  * memory — persisted as v2 on the next explicit {@link saveConfig}. */
 export async function loadConfig(dataDir: string): Promise<NodeConfig | null> {
   try {
     const raw = await Deno.readTextFile(configPath(dataDir));
+    await restrictSecretModes(dataDir);
     const parsed = JSON.parse(raw) as { v: number } & Partial<Omit<NodeConfig, "v">>;
     if (parsed.v === 1) {
       // Lazy v1→v2 migration: existing dirs keep exact current behavior.
@@ -137,10 +153,15 @@ export async function loadConfig(dataDir: string): Promise<NodeConfig | null> {
   }
 }
 
-/** Write config.json (creates the data directory when needed). */
+/** Write config.json, owner-only (creates the data directory when needed). */
 export async function saveConfig(dataDir: string, config: NodeConfig): Promise<void> {
-  await Deno.mkdir(dataDir, { recursive: true });
-  await Deno.writeTextFile(configPath(dataDir), JSON.stringify(config, null, 2) + "\n");
+  await Deno.mkdir(dataDir, { recursive: true, mode: 0o700 });
+  await Deno.writeTextFile(configPath(dataDir), JSON.stringify(config, null, 2) + "\n", {
+    mode: 0o600,
+  });
+  // mkdir/write modes apply only on creation (and are umask-masked) — chmod
+  // pins them for pre-existing paths too.
+  await restrictSecretModes(dataDir);
 }
 
 /** Create (or return the existing) daemon config; new inits default to
@@ -181,13 +202,15 @@ export async function loadOrCreateIrohKey(dataDir: string): Promise<Uint8Array> 
   const path = `${dataDir}/iroh.key`;
   try {
     const hex = (await Deno.readTextFile(path)).trim();
-    if (hex.length === 64) return fromHex(hex);
-    throw new Error(`corrupt iroh.key at ${path}`);
+    if (hex.length !== 64) throw new Error(`corrupt iroh.key at ${path}`);
+    await restrictMode(path, 0o600);
+    return fromHex(hex);
   } catch (e) {
     if (!(e instanceof Deno.errors.NotFound)) throw e;
   }
   const key = crypto.getRandomValues(new Uint8Array(32));
-  await Deno.mkdir(dataDir, { recursive: true });
+  await Deno.mkdir(dataDir, { recursive: true, mode: 0o700 });
   await Deno.writeTextFile(path, toHex(key) + "\n", { mode: 0o600 });
+  await restrictMode(path, 0o600);
   return key;
 }
