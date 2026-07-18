@@ -32,6 +32,7 @@ export interface AppTicket {
   node?: string;
 }
 
+/** Persisted record of an issued ticket — digest only, never the secret. */
 export interface AppTicketRecord {
   id: string;
   scope?: "sync" | "provision";
@@ -47,15 +48,18 @@ function base64urlNoPad(bytes: Uint8Array): string {
   return btoa(bin).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 }
 
+/** Generate a fresh 256-bit ticket secret (43-char base64url). */
 export function generateSecret(): string {
   return base64urlNoPad(crypto.getRandomValues(new Uint8Array(32)));
 }
 
+/** SHA-256 hex digest of a ticket secret — what the node stores. */
 export async function hashSecret(secret: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** Serialize an app ticket to its `lofisync1.` string form. */
 export function encodeAppTicket(ticket: AppTicket): string {
   return TICKET_PREFIX + base64urlNoPad(new TextEncoder().encode(JSON.stringify(ticket)));
 }

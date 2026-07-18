@@ -3,6 +3,8 @@
 // and persisted — the node's identity and its Jazz credentials both survive
 // restarts, so tickets and client sessions stay stable.
 
+/** Where this node replicates to: nowhere, a direct Jazz server URL (e.g.
+ * Jazz Cloud), or a peer lofi-node named by its iroh pairing ticket. */
 export type UpstreamConfig = "none" | { url: string } | { peer: string };
 
 /** Where node data lives. jazz-napi supports exactly these two today; the
@@ -10,11 +12,18 @@ export type UpstreamConfig = "none" | { url: string } | { peer: string };
  * any mounted location (NAS, synced volume) — validated writable at boot. */
 export type StorageConfig = { type: "sqlite"; path?: string } | { type: "memory" };
 
+/** Persisted daemon configuration (`<dataDir>/config.json`, version 2 —
+ * v1 files migrate lazily on load). */
 export interface NodeConfig {
+  /** Config schema version. */
   v: 2;
+  /** Jazz app id (a UUID — Jazz's catalogue requires UUID ids). */
   appId: string;
+  /** Jazz backend secret (server-to-server calls). */
   backendSecret: string;
+  /** Jazz admin secret; in ticket mode it never leaves the node. */
   adminSecret: string;
+  /** Fixed public port; auto-allocated per start when omitted. */
   listenPort?: number;
   /** "ticket": only issued app tickets reach Jazz (CLI init default).
    * "open": today's behavior (library/test default). */
@@ -28,6 +37,8 @@ export interface NodeConfig {
 
 const SUPPORTED_STORAGE = ["sqlite", "memory"];
 
+/** Throws with an actionable message for storage types jazz-napi cannot
+ * back today (`sqlite` and `memory` are the supported set). */
 export function validateStorage(storage: StorageConfig): void {
   if (!SUPPORTED_STORAGE.includes(storage.type)) {
     throw new Error(
@@ -56,10 +67,13 @@ function fromHex(text: string): Uint8Array {
   return out;
 }
 
+/** Path of the daemon config file inside a data directory. */
 export function configPath(dataDir: string): string {
   return `${dataDir}/config.json`;
 }
 
+/** Read config.json (null when absent); v1 files are mapped to v2 in
+ * memory — persisted as v2 on the next explicit {@link saveConfig}. */
 export async function loadConfig(dataDir: string): Promise<NodeConfig | null> {
   try {
     const raw = await Deno.readTextFile(configPath(dataDir));
@@ -88,11 +102,14 @@ export async function loadConfig(dataDir: string): Promise<NodeConfig | null> {
   }
 }
 
+/** Write config.json (creates the data directory when needed). */
 export async function saveConfig(dataDir: string, config: NodeConfig): Promise<void> {
   await Deno.mkdir(dataDir, { recursive: true });
   await Deno.writeTextFile(configPath(dataDir), JSON.stringify(config, null, 2) + "\n");
 }
 
+/** Create (or return the existing) daemon config; new inits default to
+ * ticket-gated access and SQLite storage, with generated secrets. */
 export async function initConfig(
   dataDir: string,
   overrides: Partial<

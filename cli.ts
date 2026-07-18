@@ -1,8 +1,20 @@
-// lofi-node CLI — init / start / pair / ticket / status.
-//
-// Ticket verbs write <dataDir>/tickets.json directly; a RUNNING daemon picks
-// changes up via the ticket store's mtime hot-reload, so issue/revoke take
-// effect without a restart and without IPC.
+/**
+ * The lofi-node CLI: `init`, `start`, `pair`, `ticket issue|list|revoke`,
+ * `status`.
+ *
+ * Run it straight from JSR:
+ *
+ * ```sh
+ * dx -A jsr:@nzip/lofi-node/cli init --port 4802
+ * dx -A jsr:@nzip/lofi-node/cli start
+ * ```
+ *
+ * Ticket verbs write `<dataDir>/tickets.json` directly; a RUNNING daemon
+ * picks changes up via the ticket store's mtime hot-reload, so issue/revoke
+ * take effect without a restart and without IPC.
+ *
+ * @module
+ */
 
 import { initConfig, loadConfig, saveConfig, type StorageConfig } from "./src/config.ts";
 import { createSyncNode } from "./src/node.ts";

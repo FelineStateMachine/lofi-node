@@ -1,5 +1,29 @@
-// @nzip/lofi-node — self-hostable Jazz sync node with iroh node-to-node
-// transport. Private prove-out; see README for status and roadmap.
+/**
+ * Self-hostable sync node for lofi apps: one daemon embedding a Jazz 2.0
+ * sync server, iroh node-to-node transport, and a ticket-gated access layer.
+ *
+ * Create a node, issue an app-connect ticket, and point a lofi app's
+ * `JAZZ_SERVER_URL` at the ticket URL:
+ *
+ * ```ts
+ * import { createSyncNode } from "@nzip/lofi-node";
+ *
+ * const node = await createSyncNode({
+ *   appId: crypto.randomUUID(),
+ *   backendSecret: "...",
+ *   adminSecret: "...",
+ *   dataDir: "./data",
+ *   access: "ticket",
+ * });
+ * const { ticket } = await node.issueTicket({ label: "phone" });
+ * // the app stores `ticket` passkey-encrypted and uses its URL as serverUrl
+ * ```
+ *
+ * The CLI lives at the `./cli` export (`dx -A jsr:@nzip/lofi-node/cli`), and
+ * in-process test helpers at `./testing`.
+ *
+ * @module
+ */
 
 export { createSyncNode } from "./src/node.ts";
 export type {

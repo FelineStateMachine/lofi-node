@@ -22,9 +22,14 @@ import { type Gate, startGate } from "./gate.ts";
 import { type AppTicketRecord, AppTicketStore, encodeAppTicket } from "./appticket.ts";
 import { MeshUnavailableError } from "./errors.ts";
 
+/** Options for {@link createSyncNode}. */
 export interface SyncNodeOptions {
+  /** Jazz app id (a UUID). */
   appId: string;
+  /** Jazz backend secret. */
   backendSecret: string;
+  /** Jazz admin secret; in ticket mode the gate injects it server-side and
+   * it never transits clients. */
   adminSecret: string;
   /** Omit (or set inMemory) for an ephemeral node — tests, throwaway relays. */
   dataDir?: string;
@@ -50,11 +55,14 @@ export interface SyncNodeOptions {
   irohLibPath?: string;
 }
 
+/** iroh mesh state: up (with pairing ticket + live tunnel stats), off, or
+ * unavailable with the precise reason (no silent degradation). */
 export type MeshStatus =
   | { state: "up"; nodeId: string; ticket: string; connections: TunnelConnStat[] }
   | { state: "off" }
   | { state: "unavailable"; reason: string };
 
+/** Public view of an issued app-connect ticket (never the secret). */
 export interface AppTicketInfo {
   id: string;
   scope: "sync" | "provision";
@@ -63,6 +71,7 @@ export interface AppTicketInfo {
   revoked: boolean;
 }
 
+/** Snapshot returned by {@link SyncNode.status}. */
 export interface SyncNodeStatus {
   appId: string;
   access: "open" | "ticket";
@@ -72,6 +81,7 @@ export interface SyncNodeStatus {
   mesh: MeshStatus;
 }
 
+/** A running sync node — see {@link createSyncNode}. */
 export interface SyncNode {
   /** Public URL — what JAZZ_SERVER_URL points at in open mode; in ticket mode
    * apps use a ticket's own /t/<secret> URL against this same host:port. */
@@ -124,6 +134,11 @@ async function probeWritable(path: string): Promise<void> {
   }
 }
 
+/**
+ * Start a sync node: an embedded Jazz server, optional iroh mesh, and (in
+ * ticket mode) the public access gate. The returned {@link SyncNode} is the
+ * whole operational surface: tickets, pairing, status, stop.
+ */
 export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode> {
   let upstream: UpstreamConfig = options.upstream ?? "none";
   const meshMode = options.mesh ?? "auto";
