@@ -98,4 +98,4 @@ jobs:
           done
           deno run --minimum-dependency-age=0 -A "jsr:@nzip/lofi-node@$version/cli" | head -3
           deno eval --minimum-dependency-age=0 "import { looksLikeAppTicket } from 'jsr:@nzip/lofi-node@$version'; if (!looksLikeAppTicket('lofisync1.abcdef')) throw new Error('lib smoke failed'); console.log('library import ok')"
-          deno x --minimum-dependency-age=0 -A "jsr:@nzip/lofi-node@$version/cli" && echo "deno x subpath form works" || echo "::warning::deno x subpath form failed — README documents deno run/install fallbacks"
+          deno x --minimum-dependency-age=0 -A "jsr:@nzip/lofi-node@$version/cli" && echo "deno x subpath form works" || echo "::warning::deno x probe failed (expected while the fresh version is inside the minimum-dependency-age window; deno x does not accept the override yet)"

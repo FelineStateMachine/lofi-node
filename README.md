@@ -28,6 +28,11 @@ deno run -A jsr:@nzip/lofi-node/cli start                  # plain deno
 deno install -g -A -n lofi-node jsr:@nzip/lofi-node/cli    # persistent `lofi-node` command
 ```
 
+> Freshly published versions sit behind Deno's 24-hour
+> [minimum-dependency-age](https://docs.deno.com/go/minimum-dependency-age) supply-chain gate.
+> Within that window use `deno run --minimum-dependency-age=0 -A jsr:@nzip/lofi-node/cli …`
+> (`deno x` does not yet accept the override).
+
 On first start the native iroh layer is downloaded from this repo's GitHub release for the matching
 version and sha256-verified against digests pinned inside the package. No Deno at all? Grab a
 compiled binary from the [releases](https://github.com/FelineStateMachine/lofi-node/releases) (macOS
