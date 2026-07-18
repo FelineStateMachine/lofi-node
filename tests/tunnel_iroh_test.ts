@@ -18,7 +18,7 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    const addon = loadIrohAddon();
+    const addon = await loadIrohAddon();
 
     // Stand-in for the acceptor's local JazzServer: a WS echo server.
     const echo = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen: () => {} }, (req) => {
@@ -75,15 +75,20 @@ Deno.test({
   },
 });
 
-Deno.test({
-  name: "loader reports a typed unavailable error rather than degrading silently",
-  ignore: available,
-  fn: () => {
-    try {
-      loadIrohAddon();
-      throw new Error("expected MeshUnavailableError");
-    } catch (e) {
-      if (!(e instanceof MeshUnavailableError)) throw e;
-    }
-  },
+Deno.test("release artifacts manifest matches deno.json version and prebuilt digests", async () => {
+  const { RELEASE_ARTIFACTS } = await import("../src/native/artifacts.ts");
+  const denoJson = JSON.parse(await Deno.readTextFile(new URL("../deno.json", import.meta.url)));
+  assertEquals(
+    RELEASE_ARTIFACTS.version,
+    denoJson.version,
+    "run `deno task release:artifacts` after a version bump",
+  );
+  for (const [platform, asset] of Object.entries(RELEASE_ARTIFACTS.assets)) {
+    assertEquals(asset.sha256.length, 64, `${platform} digest is sha256 hex`);
+    assertEquals(
+      /^libnumber0_iroh-[a-z0-9_]+-[a-z-]+\.(dylib|so)$/.test(asset.file),
+      true,
+      `${platform} asset name shape: ${asset.file}`,
+    );
+  }
 });

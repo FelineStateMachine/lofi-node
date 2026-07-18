@@ -23,7 +23,30 @@
     "lint": "deno lint",
     "start": "deno run -A cli.ts start",
     "compile": "deno compile -A --include native/iroh-js/prebuilt --output dist/lofi-node cli.ts",
-    "native": "cargo build --release --manifest-path native/iroh-js/Cargo.toml"
+    "compile:darwin-arm64": "deno compile -A --target aarch64-apple-darwin --include native/iroh-js/prebuilt/aarch64-apple-darwin --output dist/lofi-node-aarch64-apple-darwin cli.ts",
+    "compile:linux-x64": "deno compile -A --target x86_64-unknown-linux-gnu --include native/iroh-js/prebuilt/x86_64-unknown-linux-gnu --output dist/lofi-node-x86_64-unknown-linux-gnu cli.ts",
+    "compile:linux-arm64": "deno compile -A --target aarch64-unknown-linux-gnu --include native/iroh-js/prebuilt/aarch64-unknown-linux-gnu --output dist/lofi-node-aarch64-unknown-linux-gnu cli.ts",
+    "native": "cargo build --release --manifest-path native/iroh-js/Cargo.toml",
+    "release:artifacts": "deno run --allow-read --allow-write=src/native/artifacts.ts tools/release_artifacts.ts",
+    "publish:dry": "deno publish --dry-run"
+  },
+  "publish": {
+    "include": [
+      "LICENSE",
+      "README.md",
+      "mod.ts",
+      "cli.ts",
+      "src",
+      "testing",
+      "docs/app-ticket.md",
+      "docs/hosting-lofi-apps.md",
+      "docs/fixtures"
+    ],
+    "exclude": [
+      "native",
+      "tests",
+      "dist"
+    ]
   },
   "fmt": {
     "lineWidth": 100,

@@ -34,8 +34,19 @@ the evidence for behavior claims (test name or command output) in the descriptio
 - **Never call the upstream watch APIs** from the TS layer — at iroh-ffi v1.1.0 they abort the
   process under Deno (see UPSTREAM.md known issues).
 
-## Publishing
+## Releasing
 
-Not yet published: the JSR packaging story for a repo that ships native prebuilts is an open
-decision (JSR payload size vs. artifact downloads). Until that lands, consumers use the repo
-directly or `deno task compile`.
+Published to JSR as `@nzip/lofi-node`. The package ships TypeScript only; native addons are
+GitHub-release assets that the loader downloads and sha256-verifies against digests committed in
+`src/native/artifacts.ts` (regenerate with `deno task release:artifacts` — CI fails if stale).
+
+Procedure (tags on `main`, no dev branch):
+
+1. Bump `version` in `deno.json`; run `deno task release:artifacts`.
+2. `deno task check && deno task test`, then inspect the artifact: `deno task publish:dry`.
+3. Commit, push, wait for ci green.
+4. `git tag v<version> && git push origin v<version>` — publish.yml verifies the tag matches
+   `deno.json`, publishes to JSR via OIDC, compiles the three target binaries, and creates the
+   GitHub release with binaries + raw addon assets + `SHA256SUMS`, then smokes the fresh publish
+   from the registry.
+5. JSR versions are immutable — mistakes fix forward as the next patch version.

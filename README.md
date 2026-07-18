@@ -13,12 +13,31 @@ dependency.
 
 ## Quick start
 
+Run straight from JSR with `dx` (Deno's npx — `deno x`):
+
 ```sh
-deno task compile                      # one self-contained binary (dist/lofi-node)
-dist/lofi-node init --port 4802        # ticket-gated by default; --open opts out
-dist/lofi-node start                   # gate URL + node-pairing ticket
-dist/lofi-node ticket issue --label phone   # app-connect ticket (shown once)
-dist/lofi-node pair endpoint…          # elect another node as upstream
+dx -A jsr:@nzip/lofi-node/cli init --port 4802     # ticket-gated by default; --open opts out
+dx -A jsr:@nzip/lofi-node/cli start                # gate URL + node-pairing ticket
+dx -A jsr:@nzip/lofi-node/cli ticket issue --label phone   # app-connect ticket (shown once)
+```
+
+Equivalent forms:
+
+```sh
+deno run -A jsr:@nzip/lofi-node/cli start                  # plain deno
+deno install -g -A -n lofi-node jsr:@nzip/lofi-node/cli    # persistent `lofi-node` command
+```
+
+On first start the native iroh layer is downloaded from this repo's GitHub release for the matching
+version and sha256-verified against digests pinned inside the package. No Deno at all? Grab a
+compiled binary from the [releases](https://github.com/FelineStateMachine/lofi-node/releases) (macOS
+arm64, Linux x86_64/aarch64; the macOS binary is unsigned — clear quarantine with
+`xattr -d com.apple.quarantine lofi-node-*`).
+
+As a library:
+
+```sh
+deno add jsr:@nzip/lofi-node
 ```
 
 The issued `lofisync1.…` ticket carries **location + secret**; the lofi app stores it

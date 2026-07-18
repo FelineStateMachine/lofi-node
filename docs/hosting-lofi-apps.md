@@ -7,6 +7,9 @@ end against lofi's reference app (`apps/reference`) with real Chromium clients.
 
 ## 1. Host a node
 
+Install once (`deno install -g -A -n lofi-node jsr:@nzip/lofi-node/cli`), run ad hoc with
+`dx -A jsr:@nzip/lofi-node/cli …`, or download a compiled binary from the GitHub releases. Then:
+
 ```sh
 lofi-node init --dir ./data --port 4802 --public-url http://192.168.1.10:4802
 lofi-node start --dir ./data

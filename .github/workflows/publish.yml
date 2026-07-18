@@ -1,0 +1,99 @@
+# Tag a release (e.g. `git tag v0.1.0 && git push origin v0.1.0`) to publish
+# @nzip/lofi-node to JSR and attach compiled binaries + native addon artifacts
+# to the GitHub release. The tag version must match "version" in deno.json.
+name: publish
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write # gh release create + asset upload
+  id-token: write # JSR OIDC publish
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Tag must match deno.json version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          manifest="$(deno eval 'console.log(JSON.parse(Deno.readTextFileSync("deno.json")).version)')"
+          if [ "$tag" != "$manifest" ]; then
+            echo "::error::tag v$tag does not match deno.json version $manifest"
+            exit 1
+          fi
+
+      - name: Release artifacts manifest must be fresh
+        run: |
+          deno task release:artifacts
+          git diff --exit-code src/native/artifacts.ts
+
+      - name: Format, lint, typecheck
+        run: deno task check
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/iroh-js
+
+      - name: Build native addon
+        run: deno task native
+
+      - name: Full test suite
+        run: deno task test
+
+      - name: Publish dry run
+        run: deno publish --dry-run --allow-dirty
+
+      - name: Publish to JSR
+        run: deno publish
+
+      - name: Compile release binaries (3 targets)
+        run: |
+          deno task compile:darwin-arm64
+          deno task compile:linux-x64
+          deno task compile:linux-arm64
+
+      - name: Stage release assets
+        run: |
+          mkdir -p dist/assets
+          cp dist/lofi-node-aarch64-apple-darwin dist/assets/
+          cp dist/lofi-node-x86_64-unknown-linux-gnu dist/assets/
+          cp dist/lofi-node-aarch64-unknown-linux-gnu dist/assets/
+          # Raw addon artifacts under the names artifacts.ts pins.
+          cp native/iroh-js/prebuilt/aarch64-apple-darwin/libnumber0_iroh.dylib \
+            dist/assets/libnumber0_iroh-aarch64-apple-darwin.dylib
+          cp native/iroh-js/prebuilt/x86_64-unknown-linux-gnu/libnumber0_iroh.so \
+            dist/assets/libnumber0_iroh-x86_64-unknown-linux-gnu.so
+          cp native/iroh-js/prebuilt/aarch64-unknown-linux-gnu/libnumber0_iroh.so \
+            dist/assets/libnumber0_iroh-aarch64-unknown-linux-gnu.so
+          (cd dist/assets && sha256sum * > SHA256SUMS)
+          cat dist/assets/SHA256SUMS
+
+      - name: Create GitHub release with assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/assets/* \
+            --title "$GITHUB_REF_NAME" --generate-notes
+
+      - name: Registry smoke — CLI, library, and dx from a clean dir
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          smoke="$(mktemp -d)"
+          cd "$smoke"
+          for i in $(seq 1 20); do
+            deno run -A "jsr:@nzip/lofi-node@$version/cli" >/dev/null 2>&1 && break
+            echo "waiting for registry propagation ($i)"; sleep 15
+          done
+          deno run -A "jsr:@nzip/lofi-node@$version/cli" | head -3
+          deno eval "import { looksLikeAppTicket } from 'jsr:@nzip/lofi-node@$version'; if (!looksLikeAppTicket('lofisync1.abcdef')) throw new Error('lib smoke failed'); console.log('library import ok')"
+          deno x -A "jsr:@nzip/lofi-node@$version/cli" && echo "deno x subpath form works" || echo "::warning::deno x subpath form failed — README documents deno run/install fallbacks"

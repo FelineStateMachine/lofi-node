@@ -155,7 +155,7 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
   let ticketString: string | null = null;
   if (meshMode === "auto") {
     try {
-      const addon = loadIrohAddon(options.irohLibPath);
+      const addon = await loadIrohAddon(options.irohLibPath);
       const key = options.dataDir
         ? await loadOrCreateIrohKey(options.dataDir)
         : crypto.getRandomValues(new Uint8Array(32));

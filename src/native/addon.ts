@@ -8,6 +8,7 @@
 import { createRequire } from "node:module";
 import { MeshUnavailableError } from "../errors.ts";
 import { resolveIrohLib } from "./loader.ts";
+import { RELEASE_ARTIFACTS } from "./artifacts.ts";
 
 export interface SecretKey {
   toBytes(): number[];
@@ -156,29 +157,82 @@ function stageNodeArtifact(srcPath: string): string {
   return target;
 }
 
-/** Load + probe the addon. Throws MeshUnavailableError with a precise reason
- * (no silent degradation — lofi's boot-gate ethos). */
-export function loadIrohAddon(explicitPath?: string): IrohAddon {
+/** Fetch the platform's addon from the GitHub release pinned by the
+ * committed artifacts.ts, verify its sha256 against the in-package digest
+ * (the JSR artifact pins the binaries it will accept), and stage it into the
+ * version-keyed OS cache. This is how JSR consumers get the native layer —
+ * the package itself ships no binaries. */
+async function downloadReleaseArtifact(platform: string): Promise<string> {
+  const asset = (RELEASE_ARTIFACTS.assets as Record<string, { file: string; sha256: string }>)[
+    platform
+  ];
+  if (!asset) {
+    throw new MeshUnavailableError(`no release artifact for ${platform}`);
+  }
+  const dir = `${osCacheDir()}/lofi-node/iroh-js-release-${RELEASE_ARTIFACTS.version}-${platform}`;
+  const target = `${dir}/iroh.node`;
+  try {
+    Deno.statSync(target);
+    return target; // version-keyed: verified at download time
+  } catch {
+    // download below
+  }
+  const url =
+    `https://github.com/FelineStateMachine/lofi-node/releases/download/v${RELEASE_ARTIFACTS.version}/${asset.file}`;
+  let bytes: Uint8Array;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      await res.body?.cancel();
+      throw new Error(`HTTP ${res.status}`);
+    }
+    bytes = new Uint8Array(await res.arrayBuffer());
+  } catch (e) {
+    throw new MeshUnavailableError(
+      `could not download native addon from ${url}: ${(e as Error).message}`,
+    );
+  }
+  const digest = await crypto.subtle.digest("SHA-256", bytes.buffer as ArrayBuffer);
+  const sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  if (sha256 !== asset.sha256) {
+    throw new MeshUnavailableError(
+      `native addon checksum mismatch for ${asset.file}: got ${sha256.slice(0, 16)}…, ` +
+        `expected ${asset.sha256.slice(0, 16)}… — refusing to load`,
+    );
+  }
+  Deno.mkdirSync(dir, { recursive: true });
+  const tmp = `${target}.${Deno.pid}.tmp`;
+  Deno.writeFileSync(tmp, bytes);
+  Deno.renameSync(tmp, target);
+  return target;
+}
+
+/** Load + probe the addon. Resolution: env/explicit → cargo build output →
+ * in-repo prebuilt → GitHub-release download (JSR consumers). Throws
+ * MeshUnavailableError with a precise reason (no silent degradation —
+ * lofi's boot-gate ethos). */
+export async function loadIrohAddon(explicitPath?: string): Promise<IrohAddon> {
   const resolved = resolveIrohLib(explicitPath);
   if (resolved.status === "unsupported-platform") {
     throw new MeshUnavailableError(`no iroh-js build for ${resolved.platform}`);
-  }
-  if (resolved.status === "not-found") {
-    throw new MeshUnavailableError(
-      `iroh-js addon not found; tried: ${resolved.tried.join(", ")} — build with ` +
-        `\`cargo build --release\` in native/iroh-js, or set LOFI_NODE_IROH`,
-    );
   }
   // require() only loads native addons from `.node` files — cargo emits
   // .dylib/.so/.dll, and a compiled binary's embedded artifacts aren't
   // directly loadable at all; stage a real .node file either way.
   let loadPath: string;
-  try {
-    loadPath = stageNodeArtifact(resolved.path);
-  } catch (e) {
-    throw new MeshUnavailableError(
-      `could not stage .node artifact for ${resolved.path}: ${(e as Error).message}`,
-    );
+  if (resolved.status === "not-found") {
+    // Running from the JSR cache (no repo checkout): fetch the pinned
+    // release artifact instead.
+    const platform = `${Deno.build.os}-${Deno.build.arch}`;
+    loadPath = await downloadReleaseArtifact(platform);
+  } else {
+    try {
+      loadPath = stageNodeArtifact(resolved.path);
+    } catch (e) {
+      throw new MeshUnavailableError(
+        `could not stage .node artifact for ${resolved.path}: ${(e as Error).message}`,
+      );
+    }
   }
   let addon: IrohAddon;
   try {
@@ -189,11 +243,11 @@ export function loadIrohAddon(explicitPath?: string): IrohAddon {
   // Probe: core surface + the lofi_ext marker prove this is OUR build, not a
   // stock upstream artifact.
   if (typeof addon.Endpoint?.builder !== "function") {
-    throw new MeshUnavailableError(`addon at ${resolved.path} lacks the Endpoint surface`);
+    throw new MeshUnavailableError(`addon at ${loadPath} lacks the Endpoint surface`);
   }
   if (typeof addon.maxFrame !== "function" || typeof addon.writeFrame !== "function") {
     throw new MeshUnavailableError(
-      `addon at ${resolved.path} lacks lofi_ext framing — built from stock upstream?`,
+      `addon at ${loadPath} lacks lofi_ext framing — built from stock upstream?`,
     );
   }
   return addon;
