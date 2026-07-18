@@ -8,7 +8,6 @@ import { loadIrohAddon } from "../src/native/addon.ts";
 import { IrohNode } from "../src/iroh/node.ts";
 import { resolveIrohLib } from "../src/native/loader.ts";
 import { runTunnelAcceptor, startTunnelListener } from "../src/tunnel.ts";
-import { MeshUnavailableError } from "../src/errors.ts";
 
 const available = resolveIrohLib().status === "ok";
 
