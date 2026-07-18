@@ -47,8 +47,8 @@ The node's access gate validates the secret (timing-safe, digest vs digest), str
 ## Scopes: sync vs provision
 
 - **`sync`** (default): transport only. Admin/catalogue-mutating routes (`…/apps/<id>/admin/…`)
-  answer the SAME `401 {"error":"invalid_ticket"}` as an unknown secret — nothing to enumerate. This
-  is what lofi#109 calls "enrolling a ticket attaches transport only and never mutates the store."
+  answer the SAME `401 {"error":"invalid_ticket"}` as an unknown secret — nothing to enumerate.
+  Enrolling a ticket attaches transport only and never mutates the store.
 - **`provision`**: a strict superset of sync — everything above PLUS store administration. For
   provision-scoped HTTP requests the gate **injects the node's `X-Jazz-Admin-Secret` itself** (on
   `/admin/*` and on catalogue reads like `/schemas` and `/schema/<hash>`, which the merge-deploy
@@ -90,9 +90,9 @@ their lineage is.
 
 ## Store-status preflight
 
-Against a store with **no deployed schema, client writes hang indefinitely** (lofi#109's pinned
-failure surface) — so a sync-only client needs a preflight it can reach without the admin secret.
-Any valid ticket (sync scope included) may call:
+Against a store with **no deployed schema, client writes hang indefinitely** — so a sync-only client
+needs a preflight it can reach without the admin secret. Any valid ticket (sync scope included) may
+call:
 
 ```
 GET <ticket.url>/store-status
@@ -120,12 +120,15 @@ setups hold the admin secret and can query Jazz directly.
 
 1. User pastes/scans the ticket string; app parses it (`decodeAppTicket` in `@nzip/lofi-node`
    mirrors the validation: prefix, `v: 1`, http(s) URL with a `/t/<43-char-secret>` path).
-2. App encrypts the ticket with the passkey-derived at-rest key (lofi `package/runtime/auth.ts`:
-   `derivePrfSecret` → `deriveAtRestKey` → `encryptAtRest`) and stores the blob in localStorage
-   (suggested key: `lofi:sync-location:<appId>`).
-3. On boot, after the user unlocks with their passkey: decrypt, use `ticket.url` as the runtime
-   `serverUrl` override. The decrypted local data therefore reveals _location + access_ for the
-   user's lofi data.
+2. A `provision`-scoped ticket is split before anything persists: the app calls the scope-down
+   exchange (above) and declares the derived sync ticket as its sink; the provision original is held
+   in memory and, on PRF-capable devices, sealed behind the user's passkey — otherwise the user's
+   password manager keeps the durable copy. Against a node without the exchange, the ticket enrolls
+   as pasted.
+3. The declared sink persists only as a sealed envelope under a device-bound key (localStorage key
+   `lofi:data-sink:<appId>`; nothing bearer-shaped is stored in cleartext). Boot opens it silently —
+   no ceremony — and uses `ticket.url` as the runtime `serverUrl`. Unlocking sealed provision
+   capability for an admin operation is a user-verifying passkey ceremony.
 4. `ticket.appId` should match the app's own id; refuse enrollment otherwise.
 
 ## Revocation semantics

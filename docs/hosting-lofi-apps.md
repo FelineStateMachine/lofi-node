@@ -48,7 +48,7 @@ app-side flow: [app-ticket.md](app-ticket.md).
 A store with no deployed schema is unusable — client writes hang (preflight with
 `GET <ticket.url>/store-status`, see [app-ticket.md](app-ticket.md)). Two paths publish a schema:
 
-**Primary — runtime provisioning via a provision ticket** (the lofi#109 opt-in flow): issue
+**Primary — runtime provisioning via a provision ticket**: issue
 `lofi-node ticket issue --provision --label app-setup` and hand it to the app. On enrollment the app
 splits it through the scope-down exchange (everyday transport rides a derived sync ticket; admin
 capability unlocks through a passkey ceremony when provisioning actually runs). The app (or any
@@ -85,7 +85,15 @@ deno task preview
 
 `JAZZ_SERVER_URL` must be http(s) — lofi's preflight rejects ws URLs; the browser client derives the
 WebSocket endpoint itself (`…/apps/<uuid>/ws`, preserving the ticket's `/t/<secret>` base path). On
-an open-mode node use the node URL directly. Beyond a trusted LAN, front the gate with TLS;
+an open-mode node use the node URL directly.
+
+Budget for the app shell's weight when you serve it: the Jazz WASM engine is ~9.8 MB uncompressed
+(~3 MB gzip), and lofi's build prints the measured shell total on every run. Serve the static app
+with compression — precompress at deploy time (`brotli -k`, `gzip -k9` over `dist/`) and let the
+file server prefer the precompressed variants (Caddy `file_server` with `precompressed br gzip`,
+nginx `gzip_static on;`/`brotli_static on;`), or at minimum enable on-the-fly compression for
+`.wasm` and `.js`. The service worker precaches the shell once per app version, so the cost is a
+cold install and each update, not every visit. Beyond a trusted LAN, front the gate with TLS;
 installed PWAs require a secure origin. (Once lofi ships its runtime serverUrl override, the
 build-time env becomes unnecessary — the app enrolls the ticket at runtime instead; see
 [app-ticket.md](app-ticket.md).)
@@ -98,12 +106,9 @@ build-time env becomes unnecessary — the app enrolls the ticket at runtime ins
 - lofi's opt-in browser convergence gate (`tests/convergence_e2e_test.ts`) **passes against
   lofi-node**: two real Chromium clients with the backup-and-sync election performed, concurrent
   offline edits, reconnection, full bidirectional convergence — identical results against lofi's own
-  managed dev server. (An earlier version of this section reported the gate failing with
-  `CatalogueWriteDenied`; that diagnosis was wrong. The gate was not electing sync, so both clients
-  ran local-only by design, and the warning — which every browser client logs once at boot on every
-  server, converging or not — was misattributed as the cause. lofi's decision record
-  `docs/decisions/0002-convergence-verdict.md` carries the evidence.) Headless two-client
-  convergence passes as before — see `tests/convergence_test.ts`.
+  managed dev server. Browser clients log one benign `CatalogueWriteDenied` warning at boot on any
+  server; it does not affect sync. Headless two-client convergence also passes — see
+  `tests/convergence_test.ts`.
 
 ## Pairing two homes
 
