@@ -116,3 +116,22 @@ Deno.test("store: in-memory fallback works without a dataDir", async () => {
   const { secret } = await store.issue();
   assertEquals((await store.verify(secret)).status, "valid");
 });
+
+Deno.test("cross-repo fixtures: valid entries decode as expected, invalid reject", async () => {
+  const fixtures = JSON.parse(
+    await Deno.readTextFile(new URL("../docs/fixtures/app-ticket-fixtures.json", import.meta.url)),
+  ) as {
+    valid: { name: string; ticket: string; expect: Record<string, string> }[];
+    invalid: { name: string; ticket: string }[];
+  };
+  for (const entry of fixtures.valid) {
+    const decoded = decodeAppTicket(entry.ticket);
+    assert(decoded !== null, `${entry.name} decodes`);
+    assertEquals(decoded.appId, entry.expect.appId, entry.name);
+    assertEquals(decoded.scope ?? "sync", entry.expect.scope, entry.name);
+    assertEquals(decoded.url, entry.expect.url, entry.name);
+  }
+  for (const entry of fixtures.invalid) {
+    assertStrictEquals(decodeAppTicket(entry.ticket), null, `${entry.name} rejects`);
+  }
+});

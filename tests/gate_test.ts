@@ -10,6 +10,27 @@ import { CLOSE_TICKET_REVOKED, startGate } from "../src/gate.ts";
 function startStubUpstream() {
   const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen: () => {} }, (req) => {
     const url = new URL(req.url);
+    // Jazz-shaped catalogue routes for store-status (admin header required,
+    // proving the gate injected the node's secret).
+    if (url.pathname === "/apps/stub-app/schemas") {
+      if (req.headers.get("x-jazz-admin-secret") !== "node-admin-secret") {
+        return new Response("admin required", { status: 401 });
+      }
+      // Deliberately unordered `hashes`; head derives from publishedAt.
+      return Response.json({
+        hashes: ["hash-union", "hash-a"],
+        schemas: [
+          { hash: "hash-union", publishedAt: 2000 },
+          { hash: "hash-a", publishedAt: 1000 },
+        ],
+      });
+    }
+    if (url.pathname === "/apps/stub-app/admin/permissions/head") {
+      if (req.headers.get("x-jazz-admin-secret") !== "node-admin-secret") {
+        return new Response("admin required", { status: 401 });
+      }
+      return Response.json({ head: "perm-head-3" });
+    }
     if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
       const protocol = req.headers.get("sec-websocket-protocol")?.split(",")[0].trim();
       const { socket, response } = Deno.upgradeWebSocket(req, protocol ? { protocol } : {});
@@ -52,6 +73,8 @@ async function withGate(
     target: () => upstream.url,
     mode,
     store,
+    appId: "stub-app",
+    adminSecret: "node-admin-secret",
   });
   try {
     await fn({ gateUrl: `http://127.0.0.1:${gate.port}`, store, gate });
@@ -67,7 +90,7 @@ Deno.test({
   sanitizeResources: false,
   fn: () =>
     withGate("ticket", async ({ gateUrl, store }) => {
-      const { secret } = await store.issue("t");
+      const { secret } = await store.issue("t", "provision");
       const res = await fetch(
         `${gateUrl}/t/${secret}/apps/abc/admin/schema-connectivity?appId=xyz`,
         { headers: { "X-Jazz-Admin-Secret": "adm" } },
@@ -75,7 +98,7 @@ Deno.test({
       assertEquals(res.status, 200);
       const body = await res.json();
       assertEquals(body.path, "/apps/abc/admin/schema-connectivity?appId=xyz");
-      assertEquals(body.admin, "adm", "admin header forwarded for Jazz's own enforcement");
+      assertEquals(body.admin, "node-admin-secret", "node injects its own admin secret");
     }),
 });
 
@@ -173,5 +196,68 @@ Deno.test({
     withGate("open", async ({ gateUrl }) => {
       const res = await fetch(`${gateUrl}/apps/abc/schemas?x=1`);
       assertEquals((await res.json()).path, "/apps/abc/schemas?x=1");
+    }),
+});
+
+Deno.test({
+  name: "gate: sync scope on admin paths → 401 with the invalid-ticket shape",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: () =>
+    withGate("ticket", async ({ gateUrl, store }) => {
+      const { secret } = await store.issue("sync-only"); // default scope
+      const res = await fetch(`${gateUrl}/t/${secret}/apps/stub-app/admin/schemas`, {
+        method: "POST",
+        body: "{}",
+      });
+      assertEquals(res.status, 401);
+      assertEquals(await res.json(), { error: "invalid_ticket" }, "same shape as invalid");
+      // Non-admin paths still work for the same ticket.
+      const ok = await fetch(`${gateUrl}/t/${secret}/apps/abc/anything`);
+      assertEquals(ok.status, 200);
+      await ok.body?.cancel();
+    }),
+});
+
+Deno.test({
+  name: "gate: provision scope injects the node admin secret, strips inbound",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: () =>
+    withGate("ticket", async ({ gateUrl, store }) => {
+      const { secret } = await store.issue("admin", "provision");
+      // The stub echoes the admin header it received; the client sends a FAKE
+      // one which must be replaced by the node's own.
+      const res = await fetch(`${gateUrl}/t/${secret}/apps/abc/echo`, {
+        headers: { "X-Jazz-Admin-Secret": "client-supplied-fake" },
+      });
+      assertEquals((await res.json()).admin, "node-admin-secret", "injected, not forwarded");
+      // Sync scope: inbound admin header is stripped, nothing injected.
+      const { secret: syncSecret } = await store.issue("plain");
+      const res2 = await fetch(`${gateUrl}/t/${syncSecret}/apps/abc/echo`, {
+        headers: { "X-Jazz-Admin-Secret": "client-supplied-fake" },
+      });
+      assertEquals((await res2.json()).admin, null, "stripped for sync scope");
+    }),
+});
+
+Deno.test({
+  name: "gate: store-status is metadata-only and any-scope",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: () =>
+    withGate("ticket", async ({ gateUrl, store }) => {
+      const { secret } = await store.issue("sync-only"); // sync scope suffices
+      const res = await fetch(`${gateUrl}/t/${secret}/store-status`);
+      assertEquals(res.status, 200);
+      assertEquals(await res.json(), {
+        v: 1,
+        appId: "stub-app",
+        schema: { deployed: true, headHash: "hash-union", permissionsHead: "perm-head-3" },
+      });
+      // No ticket → 404 (path shape), bogus → 401.
+      const bare = await fetch(`${gateUrl}/store-status`);
+      assertEquals(bare.status, 404);
+      await bare.body?.cancel();
     }),
 });

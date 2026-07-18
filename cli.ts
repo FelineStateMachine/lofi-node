@@ -16,7 +16,7 @@ Usage:
                    [--public-url <base>] [--open] [--storage-path <path>] [--memory]
   lofi-node start  [--dir <dataDir>]
   lofi-node pair   <node-ticket> [--dir <dataDir>]
-  lofi-node ticket issue  [--label <s>] [--url <base>] [--dir <dataDir>]
+  lofi-node ticket issue  [--label <s>] [--url <base>] [--provision] [--dir <dataDir>]
   lofi-node ticket list   [--dir <dataDir>]
   lofi-node ticket revoke <id> [--dir <dataDir>]
   lofi-node status [--dir <dataDir>]
@@ -36,6 +36,7 @@ interface Args {
   url?: string;
   open: boolean;
   memory: boolean;
+  provision: boolean;
   storagePath?: string;
 }
 
@@ -46,6 +47,7 @@ function parseArgs(argv: string[]): Args {
     dir: "./lofi-node-data",
     open: false,
     memory: false,
+    provision: false,
   };
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
@@ -57,6 +59,7 @@ function parseArgs(argv: string[]): Args {
     else if (arg === "--url") args.url = argv[++i];
     else if (arg === "--open") args.open = true;
     else if (arg === "--memory") args.memory = true;
+    else if (arg === "--provision") args.provision = true;
     else if (arg === "--storage-path") args.storagePath = argv[++i];
     else args.positional.push(arg);
   }
@@ -215,17 +218,25 @@ async function cmdTicket(args: Args) {
         );
       }
     }
-    const { record, secret } = await store.issue(args.label);
+    const scope = args.provision ? "provision" as const : "sync" as const;
+    const { record, secret } = await store.issue(args.label, scope);
     const ticket = encodeAppTicket({
       v: 1,
       appId: config.appId,
       url: `${base.replace(/\/+$/, "")}/t/${secret}`,
+      scope: scope === "provision" ? "provision" : undefined,
       label: args.label,
     });
-    console.log(`issued ticket ${record.id}${args.label ? ` (${args.label})` : ""}`);
+    console.log(
+      `issued ${scope} ticket ${record.id}${args.label ? ` (${args.label})` : ""}`,
+    );
     console.log(`\n${ticket}\n`);
     console.log("Paste this into the lofi app. The secret is NOT stored and cannot");
     console.log("be shown again; a running node accepts it immediately.");
+    if (scope === "provision") {
+      console.log("PROVISION scope: this ticket also unlocks store administration");
+      console.log("(schema deploys) through the gate. Issue per provisioning context.");
+    }
     return;
   }
 
@@ -237,7 +248,9 @@ async function cmdTicket(args: Args) {
     }
     for (const t of tickets) {
       console.log(
-        `${t.id}  ${t.revokedAt ? "REVOKED" : "active "}  ${t.createdAt}  ${t.label ?? ""}`,
+        `${t.id}  ${t.revokedAt ? "REVOKED" : "active "}  ${
+          (t.scope ?? "sync").padEnd(9)
+        }  ${t.createdAt}  ${t.label ?? ""}`,
       );
     }
     return;

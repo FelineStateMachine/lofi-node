@@ -239,20 +239,31 @@ Deno.test({
       access: "ticket",
     });
     try {
+      // Provision ticket for the deploy (the gate injects the node's admin
+      // secret — the client passes a placeholder), sync ticket for devices.
+      const provisionTicket = decodeAppTicket(
+        (await node.issueTicket({ label: "setup", scope: "provision" })).ticket,
+      );
       const issued = await node.issueTicket({ label: "fixture" });
       const parsed = decodeAppTicket(issued.ticket);
-      assert(parsed !== null, "issued ticket decodes");
+      assert(parsed !== null && provisionTicket !== null, "issued tickets decode");
       const gatedUrl = parsed.url; // http://127.0.0.1:<gatePort>/t/<secret>
       assertEquals(parsed.appId, node.appId);
 
-      // ZERO client changes: the ticket URL is the serverUrl for BOTH the
-      // admin deploy (catalogue HTTP through the gate) and the devices.
+      // ZERO client changes: ticket URLs are the serverUrl for BOTH the
+      // deploy (provision scope, placeholder secret) and the devices (sync).
+      await deploy({
+        serverUrl: provisionTicket.url,
+        appId: node.appId,
+        adminSecret: "placeholder-the-gate-injects-the-real-one",
+        schema: app,
+        permissions,
+      });
       const target = {
         serverUrl: gatedUrl,
         appId: node.appId,
         adminSecret: "lofi_admin_gate",
       };
-      await deploy({ ...target, schema: app, permissions });
       const [deviceA, deviceB] = await connectDevices(target, target);
       try {
         await runConvergenceFixture(deviceA, deviceB);
@@ -272,8 +283,11 @@ Deno.test({
       await res.body?.cancel();
       assertEquals(res.status, 401, "revoked ticket → 401 at the gate");
       const tickets = await node.listTickets();
-      assertEquals(tickets.length, 1);
-      assert(tickets[0].revoked, "status reflects revocation");
+      assertEquals(tickets.length, 2);
+      assert(
+        tickets.find((t) => t.id === issued.id)?.revoked,
+        "status reflects revocation",
+      );
     } finally {
       await node.stop();
     }

@@ -22,6 +22,11 @@ export interface AppTicket {
    * Used VERBATIM as the lofi app's serverUrl — jazz clients preserve base
    * paths, so the secret rides every WS connect and catalogue fetch. */
   url: string;
+  /** "sync" (default when absent — every pre-scope ticket keeps meaning
+   * transport-only) or "provision": transport PLUS store administration (the
+   * gate injects the node's admin secret for catalogue/admin routes).
+   * Provision is a strict superset of sync. */
+  scope?: "sync" | "provision";
   label?: string;
   /** The node's iroh EndpointTicket (forward compat; unused by browsers). */
   node?: string;
@@ -29,6 +34,7 @@ export interface AppTicket {
 
 export interface AppTicketRecord {
   id: string;
+  scope?: "sync" | "provision";
   label?: string;
   secretHash: string;
   createdAt: string;
@@ -64,6 +70,9 @@ export function decodeAppTicket(text: string): AppTicket | null {
     const json = atob(b64);
     const parsed = JSON.parse(json) as AppTicket;
     if (parsed.v !== 1 || typeof parsed.appId !== "string" || typeof parsed.url !== "string") {
+      return null;
+    }
+    if (parsed.scope !== undefined && parsed.scope !== "sync" && parsed.scope !== "provision") {
       return null;
     }
     const url = new URL(parsed.url);
@@ -158,12 +167,16 @@ export class AppTicketStore {
     this.#mtime = (await Deno.stat(this.#path)).mtime?.getTime() ?? 0;
   }
 
-  async issue(label?: string): Promise<{ record: AppTicketRecord; secret: string }> {
+  async issue(
+    label?: string,
+    scope: "sync" | "provision" = "sync",
+  ): Promise<{ record: AppTicketRecord; secret: string }> {
     await this.#reload();
     const secret = generateSecret();
     const secretHash = await hashSecret(secret);
     const record: AppTicketRecord = {
       id: secretHash.slice(0, 12),
+      scope,
       label,
       secretHash,
       createdAt: new Date().toISOString(),

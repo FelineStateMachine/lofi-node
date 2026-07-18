@@ -15,12 +15,15 @@ lofisync1.<base64url(JSON, no padding)>
   "v": 1,
   "appId": "cfe52e44-7a59-4232-8dbb-bf53f27aeed6",
   "url": "http://192.168.1.10:4802/t/<secret>", // ← the app's serverUrl, verbatim
+  "scope": "provision", // optional: "sync" (default when absent) | "provision"
   "label": "phone", // optional, user-facing
-  "node": "endpoint…" // optional: the node's iroh
-  //   EndpointTicket (forward
-  //   compat; unused by browsers)
+  "node": "endpoint…" // optional: the node's iroh EndpointTicket (forward compat)
 }
 ```
+
+Parsers must treat unknown OPTIONAL fields as forward-compatible additions and an absent `scope` as
+`"sync"` — every pre-scope ticket keeps meaning transport-only. Machine-readable conformance
+fixtures: [fixtures/app-ticket-fixtures.json](fixtures/app-ticket-fixtures.json).
 
 - `<secret>` is 32 random bytes base64url (43 chars, alphabet `[A-Za-z0-9_-]`) — safe as a URL path
   segment with no encoding.
@@ -40,6 +43,51 @@ changes**:
 
 The node's access gate validates the secret (timing-safe, digest vs digest), strips the
 `/t/<secret>` prefix, and proxies to the internal Jazz server (which binds loopback-only).
+
+## Scopes: sync vs provision
+
+- **`sync`** (default): transport only. Admin/catalogue-mutating routes (`…/apps/<id>/admin/…`)
+  answer the SAME `401 {"error":"invalid_ticket"}` as an unknown secret — nothing to enumerate. This
+  is what lofi#109 calls "enrolling a ticket attaches transport only and never mutates the store."
+- **`provision`**: a strict superset of sync — everything above PLUS store administration. For
+  provision-scoped HTTP requests the gate **injects the node's `X-Jazz-Admin-Secret` itself** (on
+  `/admin/*` and on catalogue reads like `/schemas` and `/schema/<hash>`, which the merge-deploy
+  flow needs to fetch the stored head schema verbatim). The admin secret therefore never leaves the
+  node and never transits the client: a provisioning client passes any placeholder admin secret to
+  jazz-tools `deploy` — the gate strips inbound `X-Jazz-Admin-Secret` headers in ticket mode and
+  substitutes its own. Possession of a provision ticket IS the store-administration opt-in. Issue
+  one per provisioning context (`ticket issue --provision --label
+  laptop-admin`), not per device.
+
+Revocation semantics are identical for both scopes (401 / WS 4001).
+
+## Store-status preflight
+
+Against a store with **no deployed schema, client writes hang indefinitely** (lofi#109's pinned
+failure surface) — so a sync-only client needs a preflight it can reach without the admin secret.
+Any valid ticket (sync scope included) may call:
+
+```
+GET <ticket.url>/store-status
+```
+
+```jsonc
+{
+  "v": 1,
+  "appId": "…",
+  "schema": {
+    "deployed": true, // false → { "deployed": false } only
+    "headHash": "ff85ac…", // newest stored schema hash
+    "permissionsHead": "0195…" // current permissions head object id, or null
+  }
+}
+```
+
+Metadata only — never schema contents, never policies, never secrets. The node answers it itself (it
+holds the admin secret and queries its loopback Jazz). lofi's store classifier maps this to
+`no_schema` / hash-comparison states instead of hanging; `502 {"error":"store_unavailable"}` means
+the node's Jazz is unreachable. On open-mode (ungated) nodes this endpoint does not exist — dev
+setups hold the admin secret and can query Jazz directly.
 
 ## Enrollment flow (app side)
 

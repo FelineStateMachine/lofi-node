@@ -57,6 +57,7 @@ export type MeshStatus =
 
 export interface AppTicketInfo {
   id: string;
+  scope: "sync" | "provision";
   label?: string;
   createdAt: string;
   revoked: boolean;
@@ -80,8 +81,12 @@ export interface SyncNode {
   /** Node-pairing ticket; throws MeshUnavailableError if mesh is down. */
   ticket(): string;
   /** Issue an app-connect ticket (ticket mode only). The returned string is
-   * shown once — the secret is never stored, only its digest. */
-  issueTicket(options?: { label?: string; publicBase?: string }): Promise<{
+   * shown once — the secret is never stored, only its digest. scope
+   * "provision" additionally unlocks store administration through the gate
+   * (a strict superset of sync). */
+  issueTicket(
+    options?: { label?: string; publicBase?: string; scope?: "sync" | "provision" },
+  ): Promise<{
     id: string;
     ticket: string;
   }>;
@@ -99,6 +104,7 @@ export interface SyncNode {
 function toTicketInfo(record: AppTicketRecord): AppTicketInfo {
   return {
     id: record.id,
+    scope: record.scope ?? "sync",
     label: record.label,
     createdAt: record.createdAt,
     revoked: Boolean(record.revokedAt),
@@ -226,6 +232,8 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
       target: () => jazz.url.replace(/^ws/, "http"),
       mode: "ticket",
       store: ticketStore,
+      appId: options.appId,
+      adminSecret: options.adminSecret,
     });
   }
 
@@ -263,13 +271,15 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
     },
     issueTicket: async (ticketOptions = {}) => {
       if (!gate) throw new Error('issueTicket requires access: "ticket"');
-      const { record, secret } = await ticketStore.issue(ticketOptions.label);
+      const scope = ticketOptions.scope ?? "sync";
+      const { record, secret } = await ticketStore.issue(ticketOptions.label, scope);
       const base = (ticketOptions.publicBase ?? options.publicUrl ??
         `http://127.0.0.1:${gate.port}`).replace(/\/+$/, "");
       const ticket = encodeAppTicket({
         v: 1,
         appId: options.appId,
         url: `${base}/t/${secret}`,
+        scope: scope === "provision" ? "provision" : undefined,
         label: ticketOptions.label,
         node: ticketString ?? undefined,
       });

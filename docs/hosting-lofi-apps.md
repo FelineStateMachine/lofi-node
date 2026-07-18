@@ -37,11 +37,21 @@ The user pastes the ticket into their lofi app; the app stores it passkey-encryp
 and uses the ticket's URL as its sync server. Format and app-side flow:
 [app-ticket.md](app-ticket.md).
 
-## 2. Deploy the app's schema to the node
+## 2. Get the app's schema into the store
 
-A lofi app's schema must be published to the sync server it uses (the managed dev server does this
-automatically; a self-hosted node needs it once — and on every schema change). From the app
-directory, use the same schema-project deploy the lofi dev flow uses:
+A store with no deployed schema is unusable — client writes hang (preflight with
+`GET <ticket.url>/store-status`, see [app-ticket.md](app-ticket.md)). Two paths publish a schema:
+
+**Primary — runtime provisioning via a provision ticket** (the lofi#109 opt-in flow): issue
+`lofi-node ticket issue --provision --label app-setup` and hand it to the app. The app (or any
+jazz-tools `deploy` caller) uses the ticket URL as `serverUrl` with a placeholder admin secret — the
+gate strips inbound admin headers and injects the node's own for provision-scoped requests, so the
+real secret never leaves the node. Slice-by-slice merge deploys (`createTables` migrations, union
+permissions) flow through the same ticket; old-hash clients keep syncing across a merge.
+
+**Fallback — operator-side deploy from the app directory**, using the same schema-project deploy the
+lofi dev flow uses (also easiest via a provision ticket URL as `serverUrl`; the admin secret
+argument can then be a placeholder):
 
 ```ts
 // deploy-schema.ts (run: deno run -A deploy-schema.ts)

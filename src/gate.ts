@@ -31,6 +31,12 @@ export interface GateOptions {
   target: () => string;
   mode: "open" | "ticket";
   store: AppTicketStore;
+  /** The node's Jazz app id + admin secret, for provision-scoped injection
+   * and the store-status endpoint. The secret never transits the gate inbound
+   * — client-supplied X-Jazz-Admin-Secret headers are stripped in ticket
+   * mode; the gate injects config's own for provision-scoped requests. */
+  appId: string;
+  adminSecret: string;
 }
 
 export interface Gate {
@@ -90,11 +96,21 @@ export function pumpWebSockets(
   upstream.addEventListener("error", () => teardown(1011, "upstream ws error"));
 }
 
-async function proxyHttp(req: Request, targetBase: string, path: string): Promise<Response> {
+async function proxyHttp(
+  req: Request,
+  targetBase: string,
+  path: string,
+  headerOverrides?: Record<string, string | null>,
+): Promise<Response> {
   try {
+    const headers = forwardableHeaders(req.headers);
+    for (const [name, value] of Object.entries(headerOverrides ?? {})) {
+      if (value === null) delete headers[name];
+      else headers[name] = value;
+    }
     const res = await fetch(new URL(path, targetBase), {
       method: req.method,
-      headers: forwardableHeaders(req.headers),
+      headers,
       body: req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
     });
     return new Response(res.body, {
@@ -106,6 +122,77 @@ async function proxyHttp(req: Request, targetBase: string, path: string): Promis
     return new Response("upstream unavailable", { status: 502 });
   }
 }
+
+/** Node-served, metadata-only store preflight: lets a sync-scoped client
+ * classify `no_schema` / hash-mismatch instead of hanging on writes (lofi#109
+ * failure surface). Never returns schema contents, policies, or secrets. */
+async function storeStatus(
+  targetBase: string,
+  appId: string,
+  adminSecret: string,
+): Promise<Response> {
+  try {
+    const admin = { "X-Jazz-Admin-Secret": adminSecret };
+    const schemasRes = await fetch(new URL(`/apps/${appId}/schemas`, targetBase), {
+      headers: admin,
+    });
+    if (!schemasRes.ok) {
+      await schemasRes.body?.cancel();
+      debug("store-status schemas fetch", schemasRes.status);
+      return new Response(JSON.stringify({ error: "store_unavailable" }), {
+        status: 502,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    const body = await schemasRes.json() as {
+      hashes?: string[];
+      schemas?: { hash: string; publishedAt?: number | string }[];
+    };
+    // Head = newest published schema; the bare `hashes` array is NOT ordered.
+    const entries = body.schemas ?? [];
+    let headHash: string | undefined;
+    let newest = -Infinity;
+    for (const entry of entries) {
+      const at = typeof entry.publishedAt === "string"
+        ? Date.parse(entry.publishedAt)
+        : entry.publishedAt ?? 0;
+      if (at >= newest) {
+        newest = at;
+        headHash = entry.hash;
+      }
+    }
+    const hashes = body.hashes ?? entries.map((e) => e.hash);
+    headHash ??= hashes[hashes.length - 1];
+    let permissionsHead: string | null = null;
+    try {
+      const headRes = await fetch(
+        new URL(`/apps/${appId}/admin/permissions/head`, targetBase),
+        { headers: admin },
+      );
+      if (headRes.ok) {
+        permissionsHead = ((await headRes.json()) as { head?: string | null }).head ?? null;
+      } else {
+        await headRes.body?.cancel();
+      }
+    } catch {
+      // permissions head stays null
+    }
+    const schema = hashes.length > 0
+      ? { deployed: true, headHash, permissionsHead }
+      : { deployed: false };
+    return new Response(JSON.stringify({ v: 1, appId, schema }), {
+      headers: { "content-type": "application/json" },
+    });
+  } catch (e) {
+    debug("store-status error", (e as Error).message);
+    return new Response(JSON.stringify({ error: "store_unavailable" }), {
+      status: 502,
+      headers: { "content-type": "application/json" },
+    });
+  }
+}
+
+const ADMIN_PATH = /^\/apps\/[^/]+\/admin(\/|$)/;
 
 function proxyWebSocket(req: Request, targetBase: string, path: string): {
   response: Response;
@@ -184,6 +271,11 @@ export function startGate(options: GateOptions): Gate {
       const targetBase = options.target();
 
       if (options.mode === "open") {
+        // Open nodes still serve the preflight so lofi's store classifier
+        // works against dev setups.
+        if (url.pathname === "/store-status" && !isUpgrade) {
+          return storeStatus(targetBase, options.appId, options.adminSecret);
+        }
         const path = url.pathname + url.search;
         return isUpgrade
           ? proxyWebSocket(req, targetBase, path).response
@@ -202,14 +294,31 @@ export function startGate(options: GateOptions): Gate {
         debug("rejected", verdict.status, url.pathname.slice(0, 24));
         return unauthorized();
       }
-      const path = (rest || "/") + url.search;
-      debug(isUpgrade ? "ws" : req.method, path, "ticket", verdict.record.id);
+      const scope = verdict.record.scope ?? "sync";
+      const strippedPath = rest || "/";
+      if (strippedPath === "/store-status" && !isUpgrade) {
+        return storeStatus(targetBase, options.appId, options.adminSecret);
+      }
+      // Admin/catalogue-mutating routes need provision scope; a sync ticket
+      // gets the SAME 401 shape as an invalid ticket (nothing to enumerate).
+      if (ADMIN_PATH.test(strippedPath) && scope !== "provision") {
+        debug("rejected sync-scope on admin path", verdict.record.id);
+        return unauthorized();
+      }
+      const path = strippedPath + url.search;
+      debug(isUpgrade ? "ws" : req.method, path, "ticket", verdict.record.id, scope);
       if (isUpgrade) {
         const { response, socket } = proxyWebSocket(req, targetBase, path);
         track(verdict.record.id, socket);
         return response;
       }
-      return proxyHttp(req, targetBase, path);
+      // The admin secret only ever originates from the node: inbound headers
+      // are stripped; provision-scoped requests get config's secret injected
+      // (on catalogue reads too — the merge flow fetches the head schema
+      // verbatim without ever holding the secret client-side).
+      return proxyHttp(req, targetBase, path, {
+        "x-jazz-admin-secret": scope === "provision" ? options.adminSecret : null,
+      });
     },
   );
 
