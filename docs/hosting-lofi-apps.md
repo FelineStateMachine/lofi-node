@@ -95,13 +95,15 @@ build-time env becomes unnecessary — the app enrolls the ticket at runtime ins
 - Reference app **builds, boots, and serves** against a lofi-node backend; two real Chromium clients
   (lofi's `createTwoClientFixture`) load the app, hydrate the store, go offline, and edit
   independently.
-- lofi's opt-in browser convergence gate (`tests/convergence_e2e_test.ts`) currently fails at the
-  convergence stage with `CatalogueWriteDenied` from the server when the second (cloned identity)
-  client reconnects — **identically against lofi-node and against lofi's own managed dev server**
-  (controlled experiment, same error, same catalogue object id). lofi-node has exact behavior parity
-  with the first-party local server; the denial is a jazz-tools alpha.53 local-server behavior,
-  upstream of this project. Headless two-client convergence (jazz-tools `createDb` clients, same
-  account, concurrent offline edits) passes against lofi-node — see `tests/convergence_test.ts`.
+- lofi's opt-in browser convergence gate (`tests/convergence_e2e_test.ts`) **passes against
+  lofi-node**: two real Chromium clients with the backup-and-sync election performed, concurrent
+  offline edits, reconnection, full bidirectional convergence — identical results against lofi's own
+  managed dev server. (An earlier version of this section reported the gate failing with
+  `CatalogueWriteDenied`; that diagnosis was wrong. The gate was not electing sync, so both clients
+  ran local-only by design, and the warning — which every browser client logs once at boot on every
+  server, converging or not — was misattributed as the cause. lofi's decision record
+  `docs/decisions/0002-convergence-verdict.md` carries the evidence.) Headless two-client
+  convergence passes as before — see `tests/convergence_test.ts`.
 
 ## Pairing two homes
 
