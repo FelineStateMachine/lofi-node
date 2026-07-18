@@ -51,7 +51,7 @@ export function decodeClose(payload: Uint8Array): { code: number; reason: string
 
 /** WS close codes 1005/1006/1015 (and out-of-range values) may not be passed
  * to close() — normalize what we relay. */
-function sanitizeCloseCode(code: number): number {
+export function sanitizeCloseCode(code: number): number {
   if (code < 1000 || code > 4999 || code === 1005 || code === 1006 || code === 1015) return 1000;
   return code;
 }
@@ -87,7 +87,7 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
-function forwardableHeaders(headers: Headers): Record<string, string> {
+export function forwardableHeaders(headers: Headers): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, value] of headers) {
     if (!HOP_BY_HOP.has(name.toLowerCase())) out[name] = value;

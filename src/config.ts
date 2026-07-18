@@ -5,14 +5,38 @@
 
 export type UpstreamConfig = "none" | { url: string } | { peer: string };
 
+/** Where node data lives. jazz-napi supports exactly these two today; the
+ * `type` discriminator is the seam future providers slot into. `path` may be
+ * any mounted location (NAS, synced volume) — validated writable at boot. */
+export type StorageConfig = { type: "sqlite"; path?: string } | { type: "memory" };
+
 export interface NodeConfig {
-  v: 1;
+  v: 2;
   appId: string;
   backendSecret: string;
   adminSecret: string;
   listenPort?: number;
+  /** "ticket": only issued app tickets reach Jazz (CLI init default).
+   * "open": today's behavior (library/test default). */
+  access: "open" | "ticket";
+  storage: StorageConfig;
+  /** Base URL embedded into issued tickets, e.g. "http://192.168.1.10:4802". */
+  publicUrl?: string;
   upstream: UpstreamConfig;
   allowLocalFirstAuth: boolean;
+}
+
+const SUPPORTED_STORAGE = ["sqlite", "memory"];
+
+export function validateStorage(storage: StorageConfig): void {
+  if (!SUPPORTED_STORAGE.includes(storage.type)) {
+    throw new Error(
+      `unsupported storage type "${(storage as { type: string }).type}" — jazz-napi supports ` +
+        `${
+          SUPPORTED_STORAGE.join(" | ")
+        } today; see docs/hosting-lofi-apps.md for provider recipes`,
+    );
+  }
 }
 
 function randomToken(prefix: string): string {
@@ -39,9 +63,25 @@ export function configPath(dataDir: string): string {
 export async function loadConfig(dataDir: string): Promise<NodeConfig | null> {
   try {
     const raw = await Deno.readTextFile(configPath(dataDir));
-    const parsed = JSON.parse(raw) as NodeConfig;
-    if (parsed.v !== 1) throw new Error(`unsupported config version ${parsed.v}`);
-    return parsed;
+    const parsed = JSON.parse(raw) as { v: number } & Partial<Omit<NodeConfig, "v">>;
+    if (parsed.v === 1) {
+      // Lazy v1→v2 migration: existing dirs keep exact current behavior.
+      // Persisted as v2 on the next explicit saveConfig.
+      return {
+        ...(parsed as unknown as NodeConfig),
+        v: 2,
+        access: parsed.access ?? "open",
+        storage: parsed.storage ?? { type: "sqlite" },
+      };
+    }
+    if (parsed.v !== 2) {
+      throw new Error(
+        `unsupported config version ${parsed.v} — this lofi-node reads v1 and v2 config.json`,
+      );
+    }
+    const config = parsed as NodeConfig;
+    validateStorage(config.storage);
+    return config;
   } catch (e) {
     if (e instanceof Deno.errors.NotFound) return null;
     throw e;
@@ -55,19 +95,26 @@ export async function saveConfig(dataDir: string, config: NodeConfig): Promise<v
 
 export async function initConfig(
   dataDir: string,
-  overrides: Partial<Pick<NodeConfig, "appId" | "listenPort" | "upstream">> = {},
+  overrides: Partial<
+    Pick<NodeConfig, "appId" | "listenPort" | "upstream" | "access" | "storage" | "publicUrl">
+  > = {},
 ): Promise<NodeConfig> {
   const existing = await loadConfig(dataDir);
   if (existing) return existing;
   const config: NodeConfig = {
-    v: 1,
+    v: 2,
     appId: overrides.appId ?? crypto.randomUUID(),
     backendSecret: randomToken("lofi_backend"),
     adminSecret: randomToken("lofi_admin"),
     listenPort: overrides.listenPort,
+    // Secure by default for real installs; the library default stays "open".
+    access: overrides.access ?? "ticket",
+    storage: overrides.storage ?? { type: "sqlite" },
+    publicUrl: overrides.publicUrl,
     upstream: overrides.upstream ?? "none",
     allowLocalFirstAuth: true,
   };
+  validateStorage(config.storage);
   await saveConfig(dataDir, config);
   return config;
 }

@@ -1,5 +1,6 @@
 // createSyncNode — the one constructor. Consumer vocabulary is app, storage,
-// upstream, pairing, status; iroh/dlopen/tunnel/jazz-napi stay internal.
+// upstream, pairing, access, status; iroh/dlopen/tunnel/jazz-napi/gate stay
+// internal.
 
 import { loadIrohAddon } from "./native/addon.ts";
 import { IrohNode } from "./iroh/node.ts";
@@ -11,7 +12,14 @@ import {
   type TunnelListener,
 } from "./tunnel.ts";
 import { type JazzHandle, startJazz } from "./jazz.ts";
-import { loadOrCreateIrohKey, type UpstreamConfig } from "./config.ts";
+import {
+  loadOrCreateIrohKey,
+  type StorageConfig,
+  type UpstreamConfig,
+  validateStorage,
+} from "./config.ts";
+import { type Gate, startGate } from "./gate.ts";
+import { type AppTicketRecord, AppTicketStore, encodeAppTicket } from "./appticket.ts";
 import { MeshUnavailableError } from "./errors.ts";
 
 export interface SyncNodeOptions {
@@ -21,8 +29,17 @@ export interface SyncNodeOptions {
   /** Omit (or set inMemory) for an ephemeral node — tests, throwaway relays. */
   dataDir?: string;
   inMemory?: boolean;
-  /** Browser-facing Jazz WebSocket port; auto-allocated when omitted. */
+  /** Public port (the gate's in ticket mode); auto-allocated when omitted. */
   listen?: { port?: number };
+  /** "open" (library default — today's behavior): everything reaching the
+   * port syncs. "ticket": only requests carrying an issued app-ticket secret
+   * (/t/<secret>/… serverUrl base path) reach Jazz; CLI init defaults here. */
+  access?: "open" | "ticket";
+  /** Where node data lives; sqlite path may be any mounted location. */
+  storage?: StorageConfig;
+  /** Base URL embedded into issued app tickets (e.g. http://192.168.1.10:4802).
+   * Defaults to the gate's local URL — fine for same-host, wrong for LAN. */
+  publicUrl?: string;
   /** "none" (default) | direct URL (e.g. Jazz Cloud) | peer ticket over iroh. */
   upstream?: UpstreamConfig;
   /** "auto": bring up iroh if the dylib resolves; stay up without it unless a
@@ -38,32 +55,89 @@ export type MeshStatus =
   | { state: "off" }
   | { state: "unavailable"; reason: string };
 
+export interface AppTicketInfo {
+  id: string;
+  label?: string;
+  createdAt: string;
+  revoked: boolean;
+}
+
 export interface SyncNodeStatus {
   appId: string;
-  jazz: { url: string; port: number; storage: "persistent" | "memory" };
+  access: "open" | "ticket";
+  jazz: { url: string; port: number; storage: StorageConfig };
+  tickets: AppTicketInfo[];
   upstream: UpstreamConfig;
   mesh: MeshStatus;
 }
 
 export interface SyncNode {
-  /** Browser-facing Jazz WebSocket URL — what JAZZ_SERVER_URL points at. */
+  /** Public URL — what JAZZ_SERVER_URL points at in open mode; in ticket mode
+   * apps use a ticket's own /t/<secret> URL against this same host:port. */
   url: string;
   port: number;
   appId: string;
-  /** Pairing ticket for this node; throws MeshUnavailableError if mesh is down. */
+  /** Node-pairing ticket; throws MeshUnavailableError if mesh is down. */
   ticket(): string;
-  /** Re-elect the upstream to a peer AT RUNTIME: swaps the tunnel and
-   * restarts the embedded Jazz server on the SAME port, so browser clients
-   * simply reconnect. Throws MeshUnavailableError if the mesh is down. */
+  /** Issue an app-connect ticket (ticket mode only). The returned string is
+   * shown once — the secret is never stored, only its digest. */
+  issueTicket(options?: { label?: string; publicBase?: string }): Promise<{
+    id: string;
+    ticket: string;
+  }>;
+  /** Revoke by id: new connections 401 immediately; live gated sockets close
+   * with 4001 within the sweep interval. */
+  revokeTicket(id: string): Promise<boolean>;
+  listTickets(): Promise<AppTicketInfo[]>;
+  /** Re-elect the upstream to a peer AT RUNTIME. The public port never
+   * changes. Throws MeshUnavailableError if the mesh is down. */
   pair(peerTicket: string): Promise<void>;
   status(): SyncNodeStatus;
   stop(): Promise<void>;
 }
 
+function toTicketInfo(record: AppTicketRecord): AppTicketInfo {
+  return {
+    id: record.id,
+    label: record.label,
+    createdAt: record.createdAt,
+    revoked: Boolean(record.revokedAt),
+  };
+}
+
+/** Fail fast with the offending path when a user-chosen storage location is
+ * not writable (NAS/synced-volume friendliness; no silent degradation). */
+async function probeWritable(path: string): Promise<void> {
+  try {
+    await Deno.mkdir(path, { recursive: true });
+    const probe = `${path}/.lofi-write-probe`;
+    await Deno.writeTextFile(probe, "probe");
+    await Deno.remove(probe);
+  } catch (e) {
+    throw new Error(`storage path "${path}" is not writable: ${(e as Error).message}`);
+  }
+}
+
 export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode> {
   let upstream: UpstreamConfig = options.upstream ?? "none";
   const meshMode = options.mesh ?? "auto";
-  const inMemory = options.inMemory ?? options.dataDir === undefined;
+  const access = options.access ?? "open";
+
+  // 0. Storage election. Back-compat: explicit storage wins, else today's
+  // rules (inMemory flag / absent dataDir → memory).
+  const storage: StorageConfig = options.storage ??
+    (options.inMemory ?? options.dataDir === undefined ? { type: "memory" } : { type: "sqlite" });
+  validateStorage(storage);
+  let jazzDataDir: string | undefined;
+  if (storage.type === "sqlite") {
+    jazzDataDir = storage.path ??
+      (options.dataDir ? `${options.dataDir}/jazz` : undefined);
+    if (jazzDataDir === undefined) {
+      throw new Error('storage {type:"sqlite"} needs a path (or a node dataDir)');
+    }
+    await probeWritable(jazzDataDir);
+  }
+  const inMemory = storage.type === "memory";
 
   // 1. Mesh (iroh) — optional unless the upstream election requires it.
   // Connections are attached at status() time (they live in the tunnels).
@@ -115,36 +189,70 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
       backendSecret: options.backendSecret,
       adminSecret: options.adminSecret,
       port,
-      dataDir: options.dataDir ? `${options.dataDir}/jazz` : undefined,
+      dataDir: jazzDataDir,
       inMemory,
       upstreamUrl,
       allowLocalFirstAuth: options.allowLocalFirstAuth,
     });
   }
 
-  // 3. Jazz server.
+  // 3. Jazz server. In ticket mode Jazz takes an ephemeral loopback port and
+  // the gate owns the public one; in open mode Jazz gets the listen port
+  // directly (today's exact behavior — JazzServer binds loopback-only, so
+  // "open" remains same-host/reverse-proxy territory).
+  const gated = access === "ticket";
   let jazz: JazzHandle;
   const initial = resolveUpstream(upstream);
   tunnelListener = initial.listener;
   try {
-    jazz = await startJazzFor(initial.url, options.listen?.port);
+    jazz = await startJazzFor(initial.url, gated ? undefined : options.listen?.port);
   } catch (e) {
     await initial.listener?.close();
     await irohNode?.close();
     throw e;
   }
+  if (new URL(jazz.url.replace(/^ws/, "http")).hostname !== "127.0.0.1") {
+    // The gate's enforcement assumes Jazz is loopback-only (true at
+    // alpha.53); a future alpha binding wider would need a firewall note.
+    console.warn(`lofi-node: JazzServer bound ${jazz.url}, expected loopback`);
+  }
 
-  // 4. Inbound bridge: peers' tunnels land on our Jazz server.
+  // 3b. App tickets + gate (ticket mode).
+  const ticketStore = await AppTicketStore.load(options.dataDir);
+  let gate: Gate | null = null;
+  if (gated) {
+    gate = startGate({
+      port: options.listen?.port ?? 0,
+      target: () => jazz.url.replace(/^ws/, "http"),
+      mode: "ticket",
+      store: ticketStore,
+    });
+  }
+
+  // 4. Inbound bridge: peers' tunnels land directly on the INTERNAL Jazz URL
+  // — paired peers are authenticated by possession of the node-pairing
+  // ticket, so this is not a gate bypass.
   let acceptor: TunnelAcceptor | null = null;
   if (irohNode) {
     acceptor = runTunnelAcceptor(irohNode, jazz.url);
   }
 
+  const publicPort = gate ? gate.port : jazz.port;
+  const publicUrl = gate ? `ws://127.0.0.1:${gate.port}` : jazz.url;
+
+  // status() is sync; keep a ticket snapshot refreshed by every ticket call
+  // and opportunistically by status() itself (next call sees fresh state).
+  let ticketSnapshot: AppTicketInfo[] = (await ticketStore.list()).map(toTicketInfo);
+  const refreshTickets = async () => {
+    ticketSnapshot = (await ticketStore.list()).map(toTicketInfo);
+    return ticketSnapshot;
+  };
+
   let stopped: Promise<void> | null = null;
   let pairing: Promise<void> | null = null;
   return {
-    url: jazz.url,
-    port: jazz.port,
+    url: publicUrl,
+    port: publicPort,
     appId: options.appId,
     ticket: () => {
       if (!ticketString) {
@@ -153,12 +261,36 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
       }
       return ticketString;
     },
+    issueTicket: async (ticketOptions = {}) => {
+      if (!gate) throw new Error('issueTicket requires access: "ticket"');
+      const { record, secret } = await ticketStore.issue(ticketOptions.label);
+      const base = (ticketOptions.publicBase ?? options.publicUrl ??
+        `http://127.0.0.1:${gate.port}`).replace(/\/+$/, "");
+      const ticket = encodeAppTicket({
+        v: 1,
+        appId: options.appId,
+        url: `${base}/t/${secret}`,
+        label: ticketOptions.label,
+        node: ticketString ?? undefined,
+      });
+      await refreshTickets();
+      return { id: record.id, ticket };
+    },
+    revokeTicket: async (id: string) => {
+      const revoked = (await ticketStore.revoke(id)) !== null;
+      await refreshTickets();
+      return revoked;
+    },
+    listTickets: () => refreshTickets(),
     pair: (peerTicket: string) => {
       if (stopped) return Promise.reject(new Error("node is stopped"));
       if (pairing) return Promise.reject(new Error("a pair() is already in progress"));
       pairing = (async () => {
         try {
-          const keptPort = jazz.port;
+          // In gated mode the public port belongs to the gate, so Jazz can
+          // restart on a fresh ephemeral port; in open mode keep the port so
+          // clients reconnect to an unchanged URL.
+          const keptPort = gate ? undefined : jazz.port;
           // resolveUpstream throws (MeshUnavailableError) BEFORE teardown.
           const next = resolveUpstream({ peer: peerTicket });
           const oldListener = tunnelListener;
@@ -173,20 +305,26 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
       })();
       return pairing;
     },
-    status: () => ({
-      appId: options.appId,
-      jazz: { url: jazz.url, port: jazz.port, storage: inMemory ? "memory" : "persistent" },
-      upstream,
-      mesh: mesh.state === "up"
-        ? {
-          ...mesh,
-          connections: [...(tunnelListener?.stats() ?? []), ...(acceptor?.stats() ?? [])],
-        }
-        : mesh,
-    }),
+    status: () => {
+      refreshTickets().catch(() => {});
+      return {
+        appId: options.appId,
+        access,
+        jazz: { url: jazz.url, port: jazz.port, storage },
+        tickets: ticketSnapshot,
+        upstream,
+        mesh: mesh.state === "up"
+          ? {
+            ...mesh,
+            connections: [...(tunnelListener?.stats() ?? []), ...(acceptor?.stats() ?? [])],
+          }
+          : mesh,
+      };
+    },
     stop: () => (stopped ??= (async () => {
       acceptor?.close();
       await tunnelListener?.close();
+      await gate?.close();
       await jazz.stop();
       await irohNode?.close();
     })()),

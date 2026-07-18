@@ -1,19 +1,29 @@
-// lofi-node CLI — init / start / pair / status. Prove-out scope: `pair`
-// persists the election and asks for a restart (no daemon IPC yet).
+// lofi-node CLI — init / start / pair / ticket / status.
+//
+// Ticket verbs write <dataDir>/tickets.json directly; a RUNNING daemon picks
+// changes up via the ticket store's mtime hot-reload, so issue/revoke take
+// effect without a restart and without IPC.
 
-import { initConfig, loadConfig, saveConfig } from "./src/config.ts";
+import { initConfig, loadConfig, saveConfig, type StorageConfig } from "./src/config.ts";
 import { createSyncNode } from "./src/node.ts";
 import { looksLikeTicket } from "./src/ticket.ts";
+import { AppTicketStore, encodeAppTicket, looksLikeAppTicket } from "./src/appticket.ts";
 
-const USAGE = `lofi-node — self-hostable Jazz sync node with iroh transport
+const USAGE = `lofi-node — self-hostable sync node for lofi apps
 
 Usage:
   lofi-node init   [--dir <dataDir>] [--app-id <id>] [--port <n>]
+                   [--public-url <base>] [--open] [--storage-path <path>] [--memory]
   lofi-node start  [--dir <dataDir>]
-  lofi-node pair   <ticket> [--dir <dataDir>]
+  lofi-node pair   <node-ticket> [--dir <dataDir>]
+  lofi-node ticket issue  [--label <s>] [--url <base>] [--dir <dataDir>]
+  lofi-node ticket list   [--dir <dataDir>]
+  lofi-node ticket revoke <id> [--dir <dataDir>]
   lofi-node status [--dir <dataDir>]
 
-The data directory defaults to ./lofi-node-data.`;
+The data directory defaults to ./lofi-node-data. New inits are ticket-gated
+(--open opts out); app tickets are issued with \`ticket issue\` and pasted
+into the lofi app.`;
 
 interface Args {
   command: string;
@@ -21,15 +31,33 @@ interface Args {
   dir: string;
   appId?: string;
   port?: number;
+  publicUrl?: string;
+  label?: string;
+  url?: string;
+  open: boolean;
+  memory: boolean;
+  storagePath?: string;
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { command: argv[0] ?? "", positional: [], dir: "./lofi-node-data" };
+  const args: Args = {
+    command: argv[0] ?? "",
+    positional: [],
+    dir: "./lofi-node-data",
+    open: false,
+    memory: false,
+  };
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--dir") args.dir = argv[++i];
     else if (arg === "--app-id") args.appId = argv[++i];
     else if (arg === "--port") args.port = Number(argv[++i]);
+    else if (arg === "--public-url") args.publicUrl = argv[++i];
+    else if (arg === "--label") args.label = argv[++i];
+    else if (arg === "--url") args.url = argv[++i];
+    else if (arg === "--open") args.open = true;
+    else if (arg === "--memory") args.memory = true;
+    else if (arg === "--storage-path") args.storagePath = argv[++i];
     else args.positional.push(arg);
   }
   return args;
@@ -46,14 +74,46 @@ async function requireConfig(dir: string) {
   return config;
 }
 
+function describeStorage(storage: StorageConfig, dir: string): string {
+  if (storage.type === "memory") return "memory (no persistence)";
+  return `sqlite (${storage.path ?? `${dir}/jazz`})`;
+}
+
+function lanAddress(): string | null {
+  try {
+    for (const iface of Deno.networkInterfaces()) {
+      if (iface.family === "IPv4" && !iface.address.startsWith("127.")) return iface.address;
+    }
+  } catch {
+    // permission or platform issue — fall through
+  }
+  return null;
+}
+
 async function cmdInit(args: Args) {
   const existing = await loadConfig(args.dir);
   if (existing) fail(`already initialized: ${args.dir}/config.json`);
-  const config = await initConfig(args.dir, { appId: args.appId, listenPort: args.port });
+  const storage: StorageConfig = args.memory
+    ? { type: "memory" }
+    : { type: "sqlite", path: args.storagePath };
+  const config = await initConfig(args.dir, {
+    appId: args.appId,
+    listenPort: args.port,
+    access: args.open ? "open" : "ticket",
+    storage,
+    publicUrl: args.publicUrl,
+  });
   console.log(`initialized ${args.dir}`);
   console.log(`  app id:     ${config.appId}`);
+  console.log(`  access:     ${config.access}`);
+  console.log(`  storage:    ${describeStorage(config.storage, args.dir)}`);
   console.log(`  listen:     ${config.listenPort ?? "(auto)"}`);
-  console.log(`\nNext: lofi-node start --dir ${args.dir}`);
+  if (config.access === "ticket") {
+    console.log(`\nNext: lofi-node start --dir ${args.dir}`);
+    console.log(`Then: lofi-node ticket issue --dir ${args.dir}   # connect an app`);
+  } else {
+    console.log(`\nNext: lofi-node start --dir ${args.dir}`);
+  }
 }
 
 async function cmdStart(args: Args) {
@@ -64,14 +124,27 @@ async function cmdStart(args: Args) {
     adminSecret: config.adminSecret,
     dataDir: args.dir,
     listen: config.listenPort ? { port: config.listenPort } : undefined,
+    access: config.access,
+    storage: config.storage,
+    publicUrl: config.publicUrl,
     upstream: config.upstream,
     allowLocalFirstAuth: config.allowLocalFirstAuth,
   });
   const status = node.status();
   console.log(`lofi-node up`);
   console.log(`  app id:     ${node.appId}`);
-  console.log(`  jazz url:   ${node.url}   <- point JAZZ_SERVER_URL here`);
-  console.log(`  storage:    ${status.jazz.storage} (${args.dir})`);
+  console.log(`  access:     ${status.access}`);
+  if (status.access === "ticket") {
+    console.log(`  gate:       ${node.url}   (apps connect with an issued ticket URL)`);
+    console.log(
+      `  tickets:    ${
+        status.tickets.filter((t) => !t.revoked).length
+      } active — issue with: lofi-node ticket issue --dir ${args.dir}`,
+    );
+  } else {
+    console.log(`  jazz url:   ${node.url}   <- point JAZZ_SERVER_URL here`);
+  }
+  console.log(`  storage:    ${describeStorage(status.jazz.storage, args.dir)}`);
   console.log(
     `  upstream:   ${
       status.upstream === "none"
@@ -96,7 +169,6 @@ async function cmdStart(args: Args) {
     } catch (e) {
       console.error(`shutdown error: ${(e as Error).message}`);
     }
-    // Parked db_accept threads cannot be woken (upstream gap); exit hard.
     Deno.exit(0);
   });
   await new Promise(() => {});
@@ -104,18 +176,96 @@ async function cmdStart(args: Args) {
 
 async function cmdPair(args: Args) {
   const ticket = args.positional[0];
-  if (!ticket) fail("usage: lofi-node pair <ticket>");
-  if (!looksLikeTicket(ticket)) fail("that does not look like a pairing ticket");
+  if (!ticket) fail("usage: lofi-node pair <node-ticket>");
+  if (looksLikeAppTicket(ticket)) {
+    fail(
+      "that is an app-connect ticket (lofisync1.…); pairing takes a NODE ticket " +
+        "(the endpoint… string printed by lofi-node start on the other node)",
+    );
+  }
+  if (!looksLikeTicket(ticket)) fail("that does not look like a node-pairing ticket");
   const config = await requireConfig(args.dir);
   config.upstream = { peer: ticket };
   await saveConfig(args.dir, config);
   console.log("pairing saved. Restart the node to apply: lofi-node start");
 }
 
+async function cmdTicket(args: Args) {
+  const sub = args.positional[0];
+  const config = await requireConfig(args.dir);
+  if (config.access !== "ticket") {
+    fail(`node access is "${config.access}" — app tickets require access: "ticket"`);
+  }
+  const store = await AppTicketStore.load(args.dir);
+
+  if (sub === "issue") {
+    if (!config.listenPort && !args.url && !config.publicUrl) {
+      fail(
+        "ticket URLs need a stable address: set a fixed port (init --port) plus " +
+          "--public-url/--url, or pass --url explicitly",
+      );
+    }
+    let base = args.url ?? config.publicUrl;
+    if (!base) {
+      const lan = lanAddress();
+      base = `http://${lan ?? "127.0.0.1"}:${config.listenPort}`;
+      if (lan) {
+        console.error(
+          `note: auto-detected LAN address ${lan} — pin with --public-url if this is wrong`,
+        );
+      }
+    }
+    const { record, secret } = await store.issue(args.label);
+    const ticket = encodeAppTicket({
+      v: 1,
+      appId: config.appId,
+      url: `${base.replace(/\/+$/, "")}/t/${secret}`,
+      label: args.label,
+    });
+    console.log(`issued ticket ${record.id}${args.label ? ` (${args.label})` : ""}`);
+    console.log(`\n${ticket}\n`);
+    console.log("Paste this into the lofi app. The secret is NOT stored and cannot");
+    console.log("be shown again; a running node accepts it immediately.");
+    return;
+  }
+
+  if (sub === "list") {
+    const tickets = await store.list();
+    if (tickets.length === 0) {
+      console.log("no tickets issued");
+      return;
+    }
+    for (const t of tickets) {
+      console.log(
+        `${t.id}  ${t.revokedAt ? "REVOKED" : "active "}  ${t.createdAt}  ${t.label ?? ""}`,
+      );
+    }
+    return;
+  }
+
+  if (sub === "revoke") {
+    const id = args.positional[1];
+    if (!id) fail("usage: lofi-node ticket revoke <id>");
+    const record = await store.revoke(id);
+    if (!record) fail(`no ticket with id ${id} (see: lofi-node ticket list)`);
+    console.log(`revoked ${id} — takes effect immediately if the node is running`);
+    return;
+  }
+
+  fail("usage: lofi-node ticket <issue|list|revoke>");
+}
+
 async function cmdStatus(args: Args) {
   const config = await requireConfig(args.dir);
+  const store = await AppTicketStore.load(args.dir);
+  const tickets = await store.list();
   console.log(`  app id:     ${config.appId}`);
+  console.log(`  access:     ${config.access}`);
+  console.log(`  storage:    ${describeStorage(config.storage, args.dir)}`);
   console.log(`  listen:     ${config.listenPort ?? "(auto)"}`);
+  console.log(
+    `  tickets:    ${tickets.filter((t) => !t.revokedAt).length} active / ${tickets.length} issued`,
+  );
   console.log(
     `  upstream:   ${
       config.upstream === "none"
@@ -147,6 +297,9 @@ switch (args.command) {
     break;
   case "pair":
     await cmdPair(args);
+    break;
+  case "ticket":
+    await cmdTicket(args);
     break;
   case "status":
     await cmdStatus(args);

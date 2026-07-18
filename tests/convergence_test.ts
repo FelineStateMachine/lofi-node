@@ -9,11 +9,12 @@
 // Test 2 is the full topology: each device on its own node, nodes paired over
 // the iroh tunnel.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { createDb, schema as s } from "jazz-tools";
 import { deploy } from "jazz-tools/testing";
 import { definePermissions } from "jazz-tools/permissions";
 import { createSyncNode, type SyncNode } from "../src/node.ts";
+import { decodeAppTicket } from "../src/appticket.ts";
 import { resolveIrohLib } from "../src/native/loader.ts";
 
 const app = s.defineApp({
@@ -220,6 +221,61 @@ Deno.test({
       ]);
       await leaf.stop();
       await root.stop();
+    }
+  },
+});
+
+Deno.test({
+  name: "convergence fixture: ticket-gated node — jazz clients sync through /t/<secret> unchanged",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const node = await createSyncNode({
+      appId: crypto.randomUUID(),
+      backendSecret: "lofi_backend_gate",
+      adminSecret: "lofi_admin_gate",
+      inMemory: true,
+      mesh: "off",
+      access: "ticket",
+    });
+    try {
+      const issued = await node.issueTicket({ label: "fixture" });
+      const parsed = decodeAppTicket(issued.ticket);
+      assert(parsed !== null, "issued ticket decodes");
+      const gatedUrl = parsed.url; // http://127.0.0.1:<gatePort>/t/<secret>
+      assertEquals(parsed.appId, node.appId);
+
+      // ZERO client changes: the ticket URL is the serverUrl for BOTH the
+      // admin deploy (catalogue HTTP through the gate) and the devices.
+      const target = {
+        serverUrl: gatedUrl,
+        appId: node.appId,
+        adminSecret: "lofi_admin_gate",
+      };
+      await deploy({ ...target, schema: app, permissions });
+      const [deviceA, deviceB] = await connectDevices(target, target);
+      try {
+        await runConvergenceFixture(deviceA, deviceB);
+      } finally {
+        await Promise.allSettled([
+          within(deviceA.logout(), "device A cleanup", 3000),
+          within(deviceB.logout(), "device B cleanup", 3000),
+        ]);
+      }
+
+      // Negative: a revoked ticket is rejected at the gate (401 → jazz client
+      // fetch fails), and a bogus secret never reaches Jazz.
+      await node.revokeTicket(issued.id);
+      const res = await fetch(`${gatedUrl}/apps/${node.appId}/schemas`, {
+        headers: { "X-Jazz-Admin-Secret": "lofi_admin_gate" },
+      });
+      await res.body?.cancel();
+      assertEquals(res.status, 401, "revoked ticket → 401 at the gate");
+      const tickets = await node.listTickets();
+      assertEquals(tickets.length, 1);
+      assert(tickets[0].revoked, "status reflects revocation");
+    } finally {
+      await node.stop();
     }
   },
 });

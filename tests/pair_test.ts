@@ -103,3 +103,34 @@ Deno.test({
     await root.stop();
   },
 });
+
+Deno.test({
+  name: "ticket mode: gate URL and port survive runtime pair()",
+  ignore: !available,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const shared = {
+      appId: crypto.randomUUID(),
+      backendSecret: "lofi_backend_gatepair",
+      adminSecret: "lofi_admin_gatepair",
+    };
+    const root = await createSyncNode({ ...shared, inMemory: true });
+    const leaf = await createSyncNode({ ...shared, inMemory: true, access: "ticket" });
+    const gateUrlBefore = leaf.url;
+    const gatePortBefore = leaf.port;
+    const internalBefore = leaf.status().jazz.port;
+    assert(gatePortBefore !== internalBefore, "gate and internal jazz are distinct ports");
+
+    await leaf.pair(root.ticket());
+
+    assertEquals(leaf.url, gateUrlBefore, "public gate URL unchanged across pair()");
+    assertEquals(leaf.port, gatePortBefore, "public gate port unchanged across pair()");
+    // The gate still reaches the (restarted) internal Jazz.
+    const res = await fetch(`${gateUrlBefore.replace(/^ws/, "http")}/health`);
+    assertEquals((await res.json()).status, "healthy", "gate → restarted jazz healthy");
+
+    await leaf.stop();
+    await root.stop();
+  },
+});

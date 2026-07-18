@@ -8,11 +8,34 @@ end against lofi's reference app (`apps/reference`) with real Chromium clients.
 ## 1. Host a node
 
 ```sh
-lofi-node init --dir ./data --port 4802    # prints the app id (a UUID)
-lofi-node start --dir ./data               # Jazz URL + pairing ticket
+lofi-node init --dir ./data --port 4802 --public-url http://192.168.1.10:4802
+lofi-node start --dir ./data
 ```
 
-`data/config.json` holds the app id and the admin secret you'll need next.
+New inits are **ticket-gated**: only requests carrying an issued app-ticket secret reach Jazz (the
+embedded Jazz server binds loopback-only; lofi-node's access gate owns the public port). `--open`
+opts out for dev setups. `data/config.json` holds the app id and the admin secret you'll need below.
+
+### Storage choice
+
+`--storage-path /mnt/nas/lofi` puts the SQLite store on any mounted location (NAS, synced volume);
+`--memory` keeps everything ephemeral. The path is probed writable at boot — an unwritable location
+fails fast by name. jazz-napi supports exactly SQLite-directory and memory today; for cloud off-site
+durability, replicate the SQLite file (Litestream-style to S3, or a snapshotting volume). The
+`storage.type` discriminator in config is the seam future providers slot into.
+
+### Issue an app ticket
+
+```sh
+lofi-node ticket issue --dir ./data --label phone
+# → lofisync1.eyJ2IjoxLCJhcHBJZCI6…   (shown once; secret is never stored)
+lofi-node ticket list --dir ./data
+lofi-node ticket revoke <id> --dir ./data   # live sockets close with 4001
+```
+
+The user pastes the ticket into their lofi app; the app stores it passkey-encrypted in localStorage
+and uses the ticket's URL as its sync server. Format and app-side flow:
+[app-ticket.md](app-ticket.md).
 
 ## 2. Deploy the app's schema to the node
 
@@ -38,13 +61,16 @@ await deploy({
 ## 3. Build the app against the node
 
 ```sh
-JAZZ_APP_ID=<app id> JAZZ_SERVER_URL=http://127.0.0.1:4802 deno task build
+JAZZ_APP_ID=<app id> JAZZ_SERVER_URL=<ticket url> deno task build
 deno task preview
 ```
 
 `JAZZ_SERVER_URL` must be http(s) — lofi's preflight rejects ws URLs; the browser client derives the
-WebSocket endpoint itself (`/apps/<uuid>/ws`). For LAN/production use an https reverse proxy in
-front of the node's port; installed PWAs require a secure origin.
+WebSocket endpoint itself (`…/apps/<uuid>/ws`, preserving the ticket's `/t/<secret>` base path). On
+an open-mode node use the node URL directly. Beyond a trusted LAN, front the gate with TLS;
+installed PWAs require a secure origin. (Once lofi ships its runtime serverUrl override, the
+build-time env becomes unnecessary — the app enrolls the ticket at runtime instead; see
+[app-ticket.md](app-ticket.md).)
 
 ## Validation status (2026-07-18, jazz-tools 2.0.0-alpha.53)
 

@@ -15,10 +15,17 @@ dependency.
 
 ```sh
 deno task compile                      # one self-contained binary (dist/lofi-node)
-dist/lofi-node init                    # data dir, app id, secrets, node key
-dist/lofi-node start                   # Jazz URL + pairing ticket
+dist/lofi-node init --port 4802        # ticket-gated by default; --open opts out
+dist/lofi-node start                   # gate URL + node-pairing ticket
+dist/lofi-node ticket issue --label phone   # app-connect ticket (shown once)
 dist/lofi-node pair endpoint…          # elect another node as upstream
 ```
+
+The issued `lofisync1.…` ticket carries **location + secret**; the lofi app stores it
+passkey-encrypted and uses its URL as the sync server — possession of the ticket is access,
+revocation is `ticket revoke` (live sockets close with 4001). Format contract:
+[docs/app-ticket.md](docs/app-ticket.md). Storage location is the user's choice (`--storage-path`
+for NAS/mounted volumes, `--memory` for ephemeral).
 
 Or embed it:
 
