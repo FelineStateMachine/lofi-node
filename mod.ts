@@ -5,5 +5,5 @@ export { createSyncNode } from "./src/node.ts";
 export type { MeshStatus, SyncNode, SyncNodeOptions, SyncNodeStatus } from "./src/node.ts";
 export { initConfig, loadConfig, saveConfig } from "./src/config.ts";
 export type { NodeConfig, UpstreamConfig } from "./src/config.ts";
-export { decodeTicket, encodeTicket } from "./src/ticket.ts";
-export { IrohFfiError, IrohPoisonedError, MeshUnavailableError } from "./src/errors.ts";
+export { looksLikeTicket } from "./src/ticket.ts";
+export { MeshUnavailableError } from "./src/errors.ts";

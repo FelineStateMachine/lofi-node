@@ -8,18 +8,22 @@ Jazz's WebSocket protocol — `JAZZ_SERVER_URL` points at a node and lofi's
 the daemon: two nodes pair by ticket and replicate over a WS-over-iroh tunnel,
 dialed by key, no static IPs.
 
-**Status: private prove-out.** Consumes the sibling `../db-iroh-ffi` checkout
-(prebuilt or `target/release`) or `LOFI_NODE_IROH=<path>`; publishing waits on
-reconciling db-iroh-ffi to a game-agnostic surface (see below).
+**Status: private prove-out.** The native layer is a trimmed vendor of
+upstream [n0-computer/iroh-ffi](https://github.com/n0-computer/iroh-ffi)'s
+`iroh-js` napi crate, built in-repo (`cargo build --release` in
+`native/iroh-js/`; see `native/iroh-js/UPSTREAM.md` for provenance and the
+tag-bump procedure). Override with `LOFI_NODE_IROH=<path>`.
 
 ## Layout
 
 | Piece | Where |
 |---|---|
 | One-constructor library | `src/node.ts` (`createSyncNode`) |
-| WS-over-iroh tunnel | `src/tunnel.ts` (HELLO/TEXT/BIN/CLOSE frames, 1 conn : 1 ws) |
-| FFI binding (connections surface only) | `src/native/iroh.ts`, `src/iroh/node.ts` |
-| Pairing ticket codec (`LFN1.…`) | `src/ticket.ts` |
+| WS+HTTP-over-iroh tunnel | `src/tunnel.ts` (HELLO/TEXT/BIN/CLOSE frames, 1 conn : 1 ws or 1 http request) |
+| Vendored iroh-js napi crate | `native/iroh-js/` (upstream + `lofi_ext.rs` Buffer framing) |
+| Addon loader + typed surface | `src/native/addon.ts`, `src/native/loader.ts` |
+| Adapter (IrohNode/IrohConn) | `src/iroh/node.ts` |
+| Ticket shape check (tickets are upstream `EndpointTicket` strings) | `src/ticket.ts` |
 | Jazz wrapper (pinned `2.0.0-alpha.53`) | `src/jazz.ts` |
 | CLI: init / start / pair / status | `cli.ts` |
 | In-process test mesh (no iroh) | `testing/mod.ts` |
@@ -47,11 +51,12 @@ node.ticket();  // -> share with the peer
 
 ## Design decisions
 
-- **Nonblocking FFI, not doorbearer's pump model.** Parking calls (`db_accept`,
-  `db_conn_recv_msg`, `db_connect`, node open/close) are declared
-  `nonblocking: true` and park FFI-pool threads, not the isolate. Safe because
-  db-iroh-ffi's `send_msg` posts to a writer-task channel (never parks) on
-  locks disjoint from the recv path, and registry/poison state is per-handle.
+- **napi async, not a flat C ABI.** The vendored iroh-js crate exposes real
+  Promises; `acceptNext()` resolves `null` on `endpoint.close()`, so the
+  accept loop exits cleanly. The one extension (`lofi_ext.rs`) adds
+  Buffer-based length-prefixed framing — upstream's `Array<number>` stream
+  I/O measured 7.1 MiB/s at gate 0. Never call the upstream watch APIs: at
+  v1.1.0 they panic outside a tokio context and abort the process.
 - **The tunnel terminates WS on both ends**, so the dialer forwards the upgrade
   path/subprotocol in a HELLO frame and the acceptor replays them against its
   local JazzServer.
@@ -62,15 +67,13 @@ node.ticket();  // -> share with the peer
   consuming lofi app pins (`2.0.0-alpha.53`). Wire compat across alphas is not
   guaranteed; bump in lockstep.
 
-## Native layer roadmap
+## Native layer
 
-db-iroh-ffi is the prove-out binding, not the destination. The plan
-([docs/port-iroh-js.md](docs/port-iroh-js.md)) replaces it with a trimmed
-vendor of upstream **n0-computer/iroh-ffi's `iroh-js`** (napi-rs) built in
-this repo: connections surface only, one Buffer-framing extension module,
-`UPSTREAM.md` provenance, upstream tag tracking. That dissolves the old
-db-iroh-ffi reconciliation list (accept cancellation comes free from
-`acceptNext() → null` on close; tickets become upstream `EndpointTicket`s).
+Executed per [docs/port-iroh-js.md](docs/port-iroh-js.md): `native/iroh-js/`
+vendors upstream at v1.1.0 (endpoint/key/net/path/relay/ticket/watch modules;
+services dropped), plus `lofi_ext.rs`. db-iroh-ffi is no longer a dependency.
+Remaining from the plan: cross-compiled `prebuilt/<triple>/` artifacts, and
+surfacing `conn.stats()/paths()` into `SyncNodeStatus.mesh`.
 
 ## Tests
 

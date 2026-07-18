@@ -1,120 +1,150 @@
-// Typed wrappers over the connections surface: one class per C handle,
-// idempotent close, poison contract surfaced as IrohPoisonedError.
+// Typed adapter over the vendored iroh-js addon, preserving the contract the
+// tunnel and fixtures were built against: IrohNode open/ticket/connect/accept
+// /close, IrohConn sendMsg/recvMsg/close (recvMsg → null at end of stream).
+//
+// One bi-stream per connection carries the framed messages (lofi_ext
+// writeFrame/readFrame). The bi-stream is LAZY: QUIC acceptBi only resolves
+// when the dialer's first bytes arrive, so accept() must return at the
+// connection level or one silent dialer stalls the accept loop; first
+// sendMsg/recvMsg resolves the stream instead. accept() resolves null when
+// the endpoint closes — the acceptor loop's clean exit (proven at gate 0).
 
-import {
-  check,
-  DB_OK,
-  type IrohLib,
-  newDbBufStruct,
-  readDbBuf,
-} from "../native/iroh.ts";
-import { DB_ERR_BAD_HANDLE, DB_ERR_IO, IrohPoisonedError } from "../errors.ts";
+import type { BiStream, Connection, Endpoint, IrohAddon } from "../native/addon.ts";
+
+const ALPN = [...new TextEncoder().encode("lofi-node/0")];
 
 export class IrohConn {
-  #lib: IrohLib;
-  #handle: bigint;
+  #addon: IrohAddon;
+  #conn: Connection;
+  #biFactory: () => Promise<BiStream>;
+  #bi: Promise<BiStream> | null = null;
+  #sendChain: Promise<void> = Promise.resolve();
+  #sendFailed = false;
   #closed = false;
 
-  constructor(lib: IrohLib, handle: bigint) {
-    this.#lib = lib;
-    this.#handle = handle;
+  constructor(addon: IrohAddon, conn: Connection, biFactory: () => Promise<BiStream>) {
+    this.#addon = addon;
+    this.#conn = conn;
+    this.#biFactory = biFactory;
   }
 
-  /** Post one framed message. Never parks: frames feed the crate's writer task. */
+  #stream(): Promise<BiStream> {
+    return (this.#bi ??= this.#biFactory());
+  }
+
+  /** Post one framed message. Returns void (contract): frames are chained in
+   * call order; a write failure marks the conn dead and closes it, which the
+   * peer and our recv loop observe as end-of-stream. */
   sendMsg(bytes: Uint8Array): void {
-    check(
-      this.#lib.symbols.db_conn_send_msg(this.#handle, bytes, BigInt(bytes.length)),
-      "conn_send_msg",
-    );
+    if (this.#closed || this.#sendFailed) throw new Error("conn is closed");
+    this.#sendChain = this.#sendChain
+      .then(async () => {
+        const bi = await this.#stream();
+        await this.#addon.writeFrame(bi.send, bytes);
+      })
+      .catch(() => {
+        this.#sendFailed = true;
+        this.close().catch(() => {});
+      });
   }
 
-  /** Await the next framed message; null once the connection is closed/ended.
-   * Parks an FFI-pool thread, not the isolate. */
+  /** Await the next framed message; null once the stream ends. */
   async recvMsg(): Promise<Uint8Array | null> {
-    const out = newDbBufStruct();
-    const code = await this.#lib.symbols.db_conn_recv_msg(this.#handle, out);
-    if (code === DB_OK) return readDbBuf(this.#lib, out);
-    if (code === DB_ERR_IO || code === DB_ERR_BAD_HANDLE) return null;
-    check(code, "conn_recv_msg");
-    return null;
+    if (this.#closed) return null;
+    try {
+      const bi = await this.#stream();
+      const frame = await this.#addon.readFrame(bi.recv, null);
+      return frame === null ? null : new Uint8Array(frame);
+    } catch {
+      // Mid-frame death or closed conn: end-of-stream for the caller.
+      return null;
+    }
   }
 
-  /** Idempotent. Wakes a parked recvMsg on this conn (per-handle registry). */
+  stats(): { rtt: number | null; paths: number } {
+    try {
+      return { rtt: this.#conn.rtt(), paths: this.#conn.paths().length };
+    } catch {
+      return { rtt: null, paths: 0 };
+    }
+  }
+
+  /** Idempotent. Flushes queued frames (bounded) before closing. */
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    const code = await this.#lib.symbols.db_conn_close(this.#handle);
-    if (code !== DB_OK && code !== DB_ERR_BAD_HANDLE) check(code, "conn_close");
+    await Promise.race([this.#sendChain, new Promise((r) => setTimeout(r, 3000))]);
+    if (this.#bi !== null) {
+      try {
+        const bi = await this.#bi;
+        await bi.send.finish();
+      } catch {
+        // stream never opened or already finished/reset
+      }
+    }
+    try {
+      this.#conn.close(0n, []);
+    } catch {
+      // already closed
+    }
   }
 }
 
 export class IrohNode {
-  #lib: IrohLib;
-  #handle: bigint;
+  #addon: IrohAddon;
+  #endpoint: Endpoint;
   #closed = false;
 
-  private constructor(lib: IrohLib, handle: bigint) {
-    this.#lib = lib;
-    this.#handle = handle;
+  private constructor(addon: IrohAddon, endpoint: Endpoint) {
+    this.#addon = addon;
+    this.#endpoint = endpoint;
   }
 
-  static async open(lib: IrohLib, secretKey: Uint8Array): Promise<IrohNode> {
+  static async open(addon: IrohAddon, secretKey: Uint8Array): Promise<IrohNode> {
     if (secretKey.length !== 32) throw new Error("iroh secret key must be 32 bytes");
-    const out = new BigUint64Array(1);
-    const outBytes = new Uint8Array(out.buffer);
-    check(await lib.symbols.db_node_open(secretKey, outBytes), "node_open");
-    return new IrohNode(lib, out[0]);
+    const builder = addon.Endpoint.builder();
+    builder.applyN0();
+    builder.secretKey([...secretKey]);
+    builder.alpns([ALPN]);
+    return new IrohNode(addon, await builder.bind());
   }
 
-  id(): Uint8Array {
-    const id = new Uint8Array(32);
-    check(this.#lib.symbols.db_node_id(this.#handle, id), "node_id");
-    return id;
+  idString(): string {
+    return this.#endpoint.id().toString();
   }
 
-  /** Dialable postcard-encoded EndpointAddr (what tickets carry). */
-  async addr(): Promise<Uint8Array> {
-    const out = newDbBufStruct();
-    check(await this.#lib.symbols.db_node_addr(this.#handle, out), "node_addr");
-    return readDbBuf(this.#lib, out);
+  /** Pairing ticket (upstream EndpointTicket string). Waits briefly for the
+   * endpoint to learn dialable addresses (direct or relay). */
+  async ticket(): Promise<string> {
+    for (let i = 0; i < 100; i++) {
+      const addr = this.#endpoint.addr();
+      if (addr.directAddresses().length > 0 || addr.relayUrl() !== null) {
+        return this.#addon.EndpointTicket.fromAddr(addr).toString();
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error("endpoint has no dialable addresses after 10s");
   }
 
-  /** Seed a peer address so connect can dial without discovery. */
-  addAddr(addrBytes: Uint8Array): void {
-    check(
-      this.#lib.symbols.db_add_addr(this.#handle, addrBytes, BigInt(addrBytes.length)),
-      "add_addr",
-    );
+  /** Dial a peer by its ticket. */
+  async connect(ticket: string): Promise<IrohConn> {
+    const addr = this.#addon.EndpointTicket.fromString(ticket).endpointAddr();
+    const conn = await this.#endpoint.connect(addr, ALPN);
+    return new IrohConn(this.#addon, conn, () => conn.openBi());
   }
 
-  async connect(addrBytes: Uint8Array): Promise<IrohConn> {
-    const out = new BigUint64Array(1);
-    check(
-      await this.#lib.symbols.db_connect(
-        this.#handle,
-        addrBytes,
-        BigInt(addrBytes.length),
-        new Uint8Array(out.buffer),
-      ),
-      "connect",
-    );
-    return new IrohConn(this.#lib, out[0]);
-  }
-
-  /** Await the next inbound connection. KNOWN GAP: not woken by close() —
-   * callers must treat a daemon-lifetime accept loop as process-scoped. */
-  async accept(): Promise<IrohConn> {
-    const out = new BigUint64Array(1);
-    check(await this.#lib.symbols.db_accept(this.#handle, new Uint8Array(out.buffer)), "accept");
-    return new IrohConn(this.#lib, out[0]);
+  /** Await the next inbound connection; null when the endpoint closes (the
+   * acceptor loop's clean exit). */
+  async accept(): Promise<IrohConn | null> {
+    const incoming = await this.#endpoint.acceptNext();
+    if (incoming === null) return null;
+    const conn = await (await incoming.accept()).connect();
+    return new IrohConn(this.#addon, conn, () => conn.acceptBi());
   }
 
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    const code = await this.#lib.symbols.db_node_close(this.#handle);
-    if (code !== DB_OK && code !== DB_ERR_BAD_HANDLE) check(code, "node_close");
+    await this.#endpoint.close();
   }
 }
-
-export { IrohPoisonedError };

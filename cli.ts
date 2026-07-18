@@ -3,7 +3,7 @@
 
 import { initConfig, loadConfig, saveConfig } from "./src/config.ts";
 import { createSyncNode } from "./src/node.ts";
-import { decodeTicket } from "./src/ticket.ts";
+import { looksLikeTicket } from "./src/ticket.ts";
 
 const USAGE = `lofi-node — self-hostable Jazz sync node with iroh transport
 
@@ -105,7 +105,7 @@ async function cmdStart(args: Args) {
 async function cmdPair(args: Args) {
   const ticket = args.positional[0];
   if (!ticket) fail("usage: lofi-node pair <ticket>");
-  if (!decodeTicket(ticket)) fail("malformed ticket (expected LFN1.…)");
+  if (!looksLikeTicket(ticket)) fail("that does not look like a pairing ticket");
   const config = await requireConfig(args.dir);
   config.upstream = { peer: ticket };
   await saveConfig(args.dir, config);

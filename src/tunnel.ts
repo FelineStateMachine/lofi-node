@@ -178,17 +178,17 @@ export interface TunnelListener {
 }
 
 /** Dialer side: serve a loopback WS endpoint that carries each connection to
- * `peerAddr` over iroh. */
+ * the peer named by `peerTicket` over iroh. */
 export function startTunnelListener(
   node: IrohNode,
-  peerAddr: Uint8Array,
+  peerTicket: string,
   options: { port?: number } = {},
 ): TunnelListener {
   async function proxyHttp(req: Request): Promise<Response> {
     const url = new URL(req.url);
     let conn: IrohConn;
     try {
-      conn = await node.connect(peerAddr);
+      conn = await node.connect(peerTicket);
     } catch {
       return new Response("tunnel dial failed", { status: 502 });
     }
@@ -239,7 +239,7 @@ export function startTunnelListener(
       socket.addEventListener("message", buffer);
       socket.addEventListener("open", async () => {
         try {
-          const conn = await node.connect(peerAddr);
+          const conn = await node.connect(peerTicket);
           const hello: Hello = {
             kind: "ws",
             path: url.pathname + url.search,
@@ -267,8 +267,8 @@ export function startTunnelListener(
 }
 
 export interface TunnelAcceptor {
-  /** Stops handing new conns to the bridge. The final parked db_accept cannot
-   * be cancelled (upstream gap) — daemon teardown is process exit. */
+  /** Stops handing new conns to the bridge; the loop also exits cleanly when
+   * the endpoint closes (accept resolves null). */
   close(): void;
 }
 
@@ -346,7 +346,7 @@ export function runTunnelAcceptor(node: IrohNode, localWsUrl: string): TunnelAcc
 
   (async () => {
     while (!stopped) {
-      let conn: IrohConn;
+      let conn: IrohConn | null;
       try {
         conn = await node.accept();
       } catch {
@@ -354,6 +354,7 @@ export function runTunnelAcceptor(node: IrohNode, localWsUrl: string): TunnelAcc
         await new Promise((r) => setTimeout(r, 250));
         continue;
       }
+      if (conn === null) break; // endpoint closed — clean exit
       if (stopped) {
         conn.close().catch(() => {});
         break;

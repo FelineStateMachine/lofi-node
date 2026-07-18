@@ -1,10 +1,10 @@
 // Integration: a WebSocket carried end-to-end over a real iroh connection
-// between two in-process nodes. Skips (with a visible marker) when the dylib
-// is not resolvable. Sanitizers off: the acceptor's final parked db_accept
-// cannot be cancelled (documented upstream gap).
+// between two in-process endpoints (vendored iroh-js addon). Skips with a
+// visible marker when the addon is not built. Sanitizers off: the addon's
+// tokio runtime and QUIC endpoints outlive the test body.
 
 import { assertEquals } from "jsr:@std/assert@1";
-import { openIrohLib } from "../src/native/iroh.ts";
+import { loadIrohAddon } from "../src/native/addon.ts";
 import { IrohNode } from "../src/iroh/node.ts";
 import { resolveIrohLib } from "../src/native/loader.ts";
 import { runTunnelAcceptor, startTunnelListener } from "../src/tunnel.ts";
@@ -18,7 +18,7 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    const lib = openIrohLib();
+    const addon = loadIrohAddon();
 
     // Stand-in for the acceptor's local JazzServer: a WS echo server.
     const echo = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen: () => {} }, (req) => {
@@ -28,13 +28,12 @@ Deno.test({
     });
     const echoUrl = `ws://127.0.0.1:${(echo.addr as Deno.NetAddr).port}`;
 
-    const acceptorNode = await IrohNode.open(lib, crypto.getRandomValues(new Uint8Array(32)));
-    const dialerNode = await IrohNode.open(lib, crypto.getRandomValues(new Uint8Array(32)));
+    const acceptorNode = await IrohNode.open(addon, crypto.getRandomValues(new Uint8Array(32)));
+    const dialerNode = await IrohNode.open(addon, crypto.getRandomValues(new Uint8Array(32)));
     const acceptor = runTunnelAcceptor(acceptorNode, echoUrl);
 
-    const peerAddr = await acceptorNode.addr();
-    dialerNode.addAddr(peerAddr);
-    const listener = startTunnelListener(dialerNode, peerAddr);
+    const ticket = await acceptorNode.ticket();
+    const listener = startTunnelListener(dialerNode, ticket);
 
     const client = new WebSocket(`ws://127.0.0.1:${listener.port}/sync?key=test`);
     client.binaryType = "arraybuffer";
@@ -81,7 +80,7 @@ Deno.test({
   ignore: available,
   fn: () => {
     try {
-      openIrohLib();
+      loadIrohAddon();
       throw new Error("expected MeshUnavailableError");
     } catch (e) {
       if (!(e instanceof MeshUnavailableError)) throw e;

@@ -1,5 +1,5 @@
-import { assertEquals, assertStrictEquals } from "jsr:@std/assert@1";
-import { decodeTicket, encodeTicket } from "../src/ticket.ts";
+import { assert, assertEquals, assertFalse } from "jsr:@std/assert@1";
+import { looksLikeTicket } from "../src/ticket.ts";
 import {
   decodeClose,
   decodeFrame,
@@ -10,18 +10,12 @@ import {
   FRAME_TEXT,
 } from "../src/tunnel.ts";
 
-Deno.test("ticket round-trips arbitrary addr bytes", () => {
-  const addr = crypto.getRandomValues(new Uint8Array(97));
-  const ticket = encodeTicket(addr);
-  assertEquals(decodeTicket(ticket), addr);
-  assertEquals(decodeTicket(`  ${ticket}\n`), addr, "tolerates surrounding whitespace");
-});
-
-Deno.test("ticket rejects malformed input without throwing", () => {
-  assertStrictEquals(decodeTicket(""), null);
-  assertStrictEquals(decodeTicket("LFN1."), null);
-  assertStrictEquals(decodeTicket("BGI1.abcd"), null, "doorbearer tickets are not ours");
-  assertStrictEquals(decodeTicket("LFN1.!!!not-base64!!!"), null);
+Deno.test("ticket shape check accepts plausible tickets, rejects junk", () => {
+  assert(looksLikeTicket("endpointabcdefghijklmnopqrstuvwxyz234567abcdef"));
+  assert(looksLikeTicket("  endpointabcdefghijklmnopqrstuvwxyz234567  "), "tolerates whitespace");
+  assertFalse(looksLikeTicket(""));
+  assertFalse(looksLikeTicket("short"));
+  assertFalse(looksLikeTicket("two words that are definitely not a ticket at all"));
 });
 
 Deno.test("frame round-trips type + payload", () => {

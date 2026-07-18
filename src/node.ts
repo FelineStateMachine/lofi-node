@@ -1,9 +1,8 @@
 // createSyncNode — the one constructor. Consumer vocabulary is app, storage,
 // upstream, pairing, status; iroh/dlopen/tunnel/jazz-napi stay internal.
 
-import { openIrohLib } from "./native/iroh.ts";
+import { loadIrohAddon } from "./native/addon.ts";
 import { IrohNode } from "./iroh/node.ts";
-import { decodeTicket, encodeTicket } from "./ticket.ts";
 import { runTunnelAcceptor, startTunnelListener, type TunnelAcceptor, type TunnelListener } from "./tunnel.ts";
 import { type JazzHandle, startJazz } from "./jazz.ts";
 import { loadOrCreateIrohKey, type UpstreamConfig } from "./config.ts";
@@ -24,7 +23,7 @@ export interface SyncNodeOptions {
    * peer upstream NEEDS it. "off": plain Jazz server, dylib never loaded. */
   mesh?: "auto" | "off";
   allowLocalFirstAuth?: boolean;
-  /** Explicit dylib path (otherwise LOFI_NODE_IROH / sibling checkout). */
+  /** Explicit addon path (otherwise LOFI_NODE_IROH / in-repo build). */
   irohLibPath?: string;
 }
 
@@ -51,10 +50,6 @@ export interface SyncNode {
   stop(): Promise<void>;
 }
 
-function toHexId(bytes: Uint8Array): string {
-  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode> {
   const upstream: UpstreamConfig = options.upstream ?? "none";
   const meshMode = options.mesh ?? "auto";
@@ -66,13 +61,13 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
   let ticketString: string | null = null;
   if (meshMode === "auto") {
     try {
-      const lib = openIrohLib(options.irohLibPath);
+      const addon = loadIrohAddon(options.irohLibPath);
       const key = options.dataDir
         ? await loadOrCreateIrohKey(options.dataDir)
         : crypto.getRandomValues(new Uint8Array(32));
-      irohNode = await IrohNode.open(lib, key);
-      ticketString = encodeTicket(await irohNode.addr());
-      mesh = { state: "up", nodeId: toHexId(irohNode.id()), ticket: ticketString };
+      irohNode = await IrohNode.open(addon, key);
+      ticketString = await irohNode.ticket();
+      mesh = { state: "up", nodeId: irohNode.idString(), ticket: ticketString };
     } catch (e) {
       if (e instanceof MeshUnavailableError) {
         mesh = { state: "unavailable", reason: e.message };
@@ -93,10 +88,7 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
       const reason = mesh.state === "unavailable" ? mesh.reason : "mesh is off";
       throw new MeshUnavailableError(`peer upstream requires the mesh: ${reason}`);
     }
-    const peerAddr = decodeTicket(ticket);
-    if (!peerAddr) throw new Error("malformed pairing ticket");
-    irohNode.addAddr(peerAddr);
-    tunnelListener = startTunnelListener(irohNode, peerAddr);
+    tunnelListener = startTunnelListener(irohNode, ticket);
     upstreamUrl = `ws://127.0.0.1:${tunnelListener.port}`;
   }
 

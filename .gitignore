@@ -2,3 +2,5 @@ node_modules/
 lofi-node-data/
 data/
 *.log
+native/iroh-js/target/
+native/iroh-js/*.node

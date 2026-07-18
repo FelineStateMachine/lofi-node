@@ -1,19 +1,19 @@
-// Resolve the db-iroh-ffi dylib for this platform. Private prove-out order:
-// explicit option → LOFI_NODE_IROH env → sibling checkout ../db-iroh-ffi →
-// submodule-style native/db-iroh-ffi. Embedding prebuilts into a compiled
-// binary (doorbearer's extract-to-cache pattern) comes with packaging, later.
+// Resolve the vendored iroh-js napi addon for this platform. Resolution
+// order: explicit option → LOFI_NODE_IROH env → in-repo cargo build output →
+// prebuilt/<triple>. Embedding artifacts into a compiled binary comes with
+// packaging, later.
 
 interface Triple {
   dir: string;
-  file: string;
+  cargoFile: string;
 }
 
 const TRIPLES: Record<string, Triple> = {
-  "darwin-aarch64": { dir: "aarch64-apple-darwin", file: "libdb_iroh_ffi.dylib" },
-  "darwin-x86_64": { dir: "x86_64-apple-darwin", file: "libdb_iroh_ffi.dylib" },
-  "linux-x86_64": { dir: "x86_64-unknown-linux-gnu", file: "libdb_iroh_ffi.so" },
-  "linux-aarch64": { dir: "aarch64-unknown-linux-gnu", file: "libdb_iroh_ffi.so" },
-  "windows-x86_64": { dir: "x86_64-pc-windows-gnu", file: "db_iroh_ffi.dll" },
+  "darwin-aarch64": { dir: "aarch64-apple-darwin", cargoFile: "libnumber0_iroh.dylib" },
+  "darwin-x86_64": { dir: "x86_64-apple-darwin", cargoFile: "libnumber0_iroh.dylib" },
+  "linux-x86_64": { dir: "x86_64-unknown-linux-gnu", cargoFile: "libnumber0_iroh.so" },
+  "linux-aarch64": { dir: "aarch64-unknown-linux-gnu", cargoFile: "libnumber0_iroh.so" },
+  "windows-x86_64": { dir: "x86_64-pc-windows-gnu", cargoFile: "number0_iroh.dll" },
 };
 
 export type IrohLibResolution =
@@ -29,6 +29,8 @@ function exists(path: string): boolean {
   }
 }
 
+const HERE = new URL(".", import.meta.url).pathname;
+
 export function resolveIrohLib(explicitPath?: string): IrohLibResolution {
   const platform = `${Deno.build.os}-${Deno.build.arch}`;
   const triple = TRIPLES[platform];
@@ -38,9 +40,9 @@ export function resolveIrohLib(explicitPath?: string): IrohLibResolution {
   const candidates = [
     explicitPath,
     Deno.env.get("LOFI_NODE_IROH"),
-    `../db-iroh-ffi/target/release/${triple.file}`,
-    `../db-iroh-ffi/prebuilt/${triple.dir}/${triple.file}`,
-    `./native/db-iroh-ffi/prebuilt/${triple.dir}/${triple.file}`,
+    `${HERE}../../native/iroh-js/target/release/${triple.cargoFile}`,
+    `./native/iroh-js/target/release/${triple.cargoFile}`,
+    `${HERE}../../native/iroh-js/prebuilt/${triple.dir}/${triple.cargoFile}`,
   ];
   for (const candidate of candidates) {
     if (!candidate) continue;
