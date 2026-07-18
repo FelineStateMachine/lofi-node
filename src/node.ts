@@ -3,7 +3,13 @@
 
 import { loadIrohAddon } from "./native/addon.ts";
 import { IrohNode } from "./iroh/node.ts";
-import { runTunnelAcceptor, startTunnelListener, type TunnelAcceptor, type TunnelListener } from "./tunnel.ts";
+import {
+  runTunnelAcceptor,
+  startTunnelListener,
+  type TunnelAcceptor,
+  type TunnelConnStat,
+  type TunnelListener,
+} from "./tunnel.ts";
 import { type JazzHandle, startJazz } from "./jazz.ts";
 import { loadOrCreateIrohKey, type UpstreamConfig } from "./config.ts";
 import { MeshUnavailableError } from "./errors.ts";
@@ -28,7 +34,7 @@ export interface SyncNodeOptions {
 }
 
 export type MeshStatus =
-  | { state: "up"; nodeId: string; ticket: string }
+  | { state: "up"; nodeId: string; ticket: string; connections: TunnelConnStat[] }
   | { state: "off" }
   | { state: "unavailable"; reason: string };
 
@@ -56,7 +62,11 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
   const inMemory = options.inMemory ?? options.dataDir === undefined;
 
   // 1. Mesh (iroh) — optional unless the upstream election requires it.
-  let mesh: MeshStatus = { state: "off" };
+  // Connections are attached at status() time (they live in the tunnels).
+  let mesh:
+    | { state: "up"; nodeId: string; ticket: string }
+    | { state: "off" }
+    | { state: "unavailable"; reason: string } = { state: "off" };
   let irohNode: IrohNode | null = null;
   let ticketString: string | null = null;
   if (meshMode === "auto") {
@@ -133,7 +143,12 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
       appId: options.appId,
       jazz: { url: jazz.url, port: jazz.port, storage: inMemory ? "memory" : "persistent" },
       upstream,
-      mesh,
+      mesh: mesh.state === "up"
+        ? {
+          ...mesh,
+          connections: [...(tunnelListener?.stats() ?? []), ...(acceptor?.stats() ?? [])],
+        }
+        : mesh,
     }),
     stop: () =>
       (stopped ??= (async () => {

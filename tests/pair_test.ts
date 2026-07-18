@@ -51,6 +51,19 @@ Deno.test({
     assert(await healthy(root.url), "root healthy with tunnel in path");
     assert(await healthy(leaf.url), "leaf healthy with tunnel in path");
 
+    // Observability: the live upstream link shows up in both nodes' status.
+    const leafMesh = leaf.status().mesh;
+    const rootMesh = root.status().mesh;
+    assert(leafMesh.state === "up" && rootMesh.state === "up", "both meshes up");
+    assert(
+      leafMesh.connections.some((c) => c.direction === "out" && c.paths >= 1),
+      `leaf shows a live outbound tunnel conn: ${JSON.stringify(leafMesh.connections)}`,
+    );
+    assert(
+      rootMesh.connections.some((c) => c.direction === "in"),
+      `root shows a live inbound tunnel conn: ${JSON.stringify(rootMesh.connections)}`,
+    );
+
     await leaf.stop();
     await root.stop();
   },

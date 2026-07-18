@@ -171,9 +171,18 @@ export function bridge(
   return finished;
 }
 
+/** Live-connection observability (from upstream ConnectionStats/paths). */
+export interface TunnelConnStat {
+  direction: "out" | "in";
+  rtt: number | null;
+  paths: number;
+}
+
 export interface TunnelListener {
   /** Loopback port; use ws://127.0.0.1:<port> as JazzServer upstreamUrl. */
   port: number;
+  /** Stats for the currently live outbound tunnel connections. */
+  stats(): TunnelConnStat[];
   close(): Promise<void>;
 }
 
@@ -184,11 +193,28 @@ export function startTunnelListener(
   peerTicket: string,
   options: { port?: number } = {},
 ): TunnelListener {
+  const live = new Set<IrohConn>();
+  const track = (conn: IrohConn) => {
+    live.add(conn);
+  };
+  const collectStats = (direction: "out" | "in") => {
+    const out: TunnelConnStat[] = [];
+    for (const conn of live) {
+      if (conn.closed) {
+        live.delete(conn);
+        continue;
+      }
+      out.push({ direction, ...conn.stats() });
+    }
+    return out;
+  };
+
   async function proxyHttp(req: Request): Promise<Response> {
     const url = new URL(req.url);
     let conn: IrohConn;
     try {
       conn = await node.connect(peerTicket);
+      track(conn);
     } catch {
       return new Response("tunnel dial failed", { status: 502 });
     }
@@ -240,6 +266,7 @@ export function startTunnelListener(
       socket.addEventListener("open", async () => {
         try {
           const conn = await node.connect(peerTicket);
+          track(conn);
           const hello: Hello = {
             kind: "ws",
             path: url.pathname + url.search,
@@ -262,11 +289,14 @@ export function startTunnelListener(
   );
   return {
     port: (server.addr as Deno.NetAddr).port,
+    stats: () => collectStats("out"),
     close: () => server.shutdown(),
   };
 }
 
 export interface TunnelAcceptor {
+  /** Stats for the currently live inbound tunnel connections. */
+  stats(): TunnelConnStat[];
   /** Stops handing new conns to the bridge; the loop also exits cleanly when
    * the endpoint closes (accept resolves null). */
   close(): void;
@@ -276,6 +306,7 @@ export interface TunnelAcceptor {
 export function runTunnelAcceptor(node: IrohNode, localWsUrl: string): TunnelAcceptor {
   let stopped = false;
   const localHttpUrl = localWsUrl.replace(/^ws/, "http");
+  const live = new Set<IrohConn>();
 
   async function handleHttp(conn: IrohConn, hello: Hello): Promise<void> {
     const bodyFrame = await conn.recvMsg();
@@ -359,11 +390,23 @@ export function runTunnelAcceptor(node: IrohNode, localWsUrl: string): TunnelAcc
         conn.close().catch(() => {});
         break;
       }
+      live.add(conn);
       handleInbound(conn).catch(() => {});
     }
   })();
 
   return {
+    stats: () => {
+      const out: TunnelConnStat[] = [];
+      for (const conn of live) {
+        if (conn.closed) {
+          live.delete(conn);
+          continue;
+        }
+        out.push({ direction: "in", ...conn.stats() });
+      }
+      return out;
+    },
     close: () => {
       stopped = true;
     },

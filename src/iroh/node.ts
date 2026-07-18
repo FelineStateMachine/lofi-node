@@ -61,6 +61,10 @@ export class IrohConn {
     }
   }
 
+  get closed(): boolean {
+    return this.#closed;
+  }
+
   stats(): { rtt: number | null; paths: number } {
     try {
       return { rtt: this.#conn.rtt(), paths: this.#conn.paths().length };
