@@ -85,7 +85,15 @@ deno task preview
 
 `JAZZ_SERVER_URL` must be http(s) — lofi's preflight rejects ws URLs; the browser client derives the
 WebSocket endpoint itself (`…/apps/<uuid>/ws`, preserving the ticket's `/t/<secret>` base path). On
-an open-mode node use the node URL directly. Beyond a trusted LAN, front the gate with TLS;
+an open-mode node use the node URL directly.
+
+Budget for the app shell's weight when you serve it: the Jazz WASM engine is ~9.8 MB uncompressed
+(~3 MB gzip), and lofi's build prints the measured shell total on every run. Serve the static app
+with compression — precompress at deploy time (`brotli -k`, `gzip -k9` over `dist/`) and let the
+file server prefer the precompressed variants (Caddy `file_server` with `precompressed br gzip`,
+nginx `gzip_static on;`/`brotli_static on;`), or at minimum enable on-the-fly compression for
+`.wasm` and `.js`. The service worker precaches the shell once per app version, so the cost is a
+cold install and each update, not every visit. Beyond a trusted LAN, front the gate with TLS;
 installed PWAs require a secure origin. (Once lofi ships its runtime serverUrl override, the
 build-time env becomes unnecessary — the app enrolls the ticket at runtime instead; see
 [app-ticket.md](app-ticket.md).)

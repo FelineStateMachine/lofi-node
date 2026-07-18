@@ -17,9 +17,14 @@ lofi side implements against.
 
 ## Why the secret lives in the URL path
 
-Jazz clients preserve a base path in their server URL and reject query parameters. By making the
-ticket's URL `http(s)://host:port/t/<secret>`, every request the client ever makes — sync WebSocket
-connects, catalogue reads, admin calls — carries the secret with **zero client changes**. The gate
+A header was the obvious alternative and it does not survive contact with the platform: the
+browser's WebSocket API cannot set request headers, so a header-borne credential would need a
+different authentication path for exactly the connection that matters most. Jazz clients preserve a
+base path in their server URL and reject query parameters. By making the ticket's URL
+`http(s)://host:port/t/<secret>`, every request the client ever makes — sync WebSocket connects,
+catalogue reads, admin calls — carries the secret with **zero client changes**. The cost of the
+choice is that the secret rides in a URL, which is why proxy access logs need
+[redaction](beyond-the-lan.md) and why the gate compares digests rather than logging paths. The gate
 validates the secret (timing-safe, digest against digest), strips the prefix, and proxies to the
 loopback-only Jazz server. The lofi app uses the ticket URL verbatim as its sync server; that is the
 whole integration.

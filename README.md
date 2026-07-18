@@ -5,8 +5,9 @@
 **Self-host the sync backend for [lofi](https://github.com/FelineStateMachine/lofi) apps: one daemon
 embedding a Jazz sync server, iroh peer-to-peer transport, and ticket-gated access.**
 
-Issue a ticket carrying location + secret; the app stores it passkey-encrypted and syncs against
-your node. Pair homes by ticket — no static IPs, no cloud — and choose where your data lives.
+Issue a ticket carrying location + secret; the app seals it at rest — admin capability behind the
+user's passkey — and syncs against your node. Pair homes by ticket — no static IPs, no cloud — and
+choose where your data lives.
 
 [Documentation](https://lofi.host/node) · [API reference](https://lofi.host/node/api) ·
 [JSR package](https://jsr.io/@nzip/lofi-node) · [MIT License](LICENSE)

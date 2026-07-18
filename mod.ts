@@ -16,7 +16,7 @@
  *   access: "ticket",
  * });
  * const { ticket } = await node.issueTicket({ label: "phone" });
- * // the app stores `ticket` passkey-encrypted and uses its URL as serverUrl
+ * // the app seals `ticket` at rest and uses its URL as serverUrl
  * ```
  *
  * The CLI lives at the `./cli` export (`dx -A jsr:@nzip/lofi-node/cli`), and

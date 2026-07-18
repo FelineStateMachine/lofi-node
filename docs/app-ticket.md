@@ -120,12 +120,15 @@ setups hold the admin secret and can query Jazz directly.
 
 1. User pastes/scans the ticket string; app parses it (`decodeAppTicket` in `@nzip/lofi-node`
    mirrors the validation: prefix, `v: 1`, http(s) URL with a `/t/<43-char-secret>` path).
-2. App encrypts the ticket with the passkey-derived at-rest key (lofi `package/runtime/auth.ts`:
-   `derivePrfSecret` → `deriveAtRestKey` → `encryptAtRest`) and stores the blob in localStorage
-   (suggested key: `lofi:sync-location:<appId>`).
-3. On boot, after the user unlocks with their passkey: decrypt, use `ticket.url` as the runtime
-   `serverUrl` override. The decrypted local data therefore reveals _location + access_ for the
-   user's lofi data.
+2. A `provision`-scoped ticket is split before anything persists: the app calls the scope-down
+   exchange (above) and declares the derived sync ticket as its sink; the provision original is held
+   in memory and, on PRF-capable devices, sealed behind the user's passkey — otherwise the user's
+   password manager keeps the durable copy. Against a node without the exchange, the ticket enrolls
+   as pasted.
+3. The declared sink persists only as a sealed envelope under a device-bound key (localStorage key
+   `lofi:data-sink:<appId>`; nothing bearer-shaped is stored in cleartext). Boot opens it silently —
+   no ceremony — and uses `ticket.url` as the runtime `serverUrl`. Unlocking sealed provision
+   capability for an admin operation is a user-verifying passkey ceremony.
 4. `ticket.appId` should match the app's own id; refuse enrollment otherwise.
 
 ## Revocation semantics

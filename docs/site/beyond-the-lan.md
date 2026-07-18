@@ -29,6 +29,46 @@ Note what TLS does **not** change: the ticket still gates access, revocation sti
 and the WebSocket upgrade still rides the same URL — the browser client derives its endpoints from
 the http(s) base.
 
+## Redact ticket secrets from proxy logs
+
+Every gated request carries `/t/<secret>` in its path, and a reverse proxy's default access log
+writes request paths — so a stock logging config quietly collects bearer credentials on disk. Redact
+the path before it is logged (or disable access logging for the gate's host).
+
+Caddy, with its log field filter:
+
+```caddyfile
+node.example.com {
+    reverse_proxy 127.0.0.1:4802
+    log {
+        format filter {
+            wrap console
+            fields {
+                request>uri regexp /t/[A-Za-z0-9_-]{43} /t/<redacted>
+            }
+        }
+    }
+}
+```
+
+nginx, by logging a scrubbed copy of the URI:
+
+```nginx
+map $request_uri $redacted_uri {
+    "~^(?<pre>.*/t/)[A-Za-z0-9_-]{43}(?<post>.*)$" "${pre}<redacted>${post}";
+    default $request_uri;
+}
+log_format redacted '$remote_addr - [$time_local] '
+                    '"$request_method $redacted_uri $server_protocol" '
+                    '$status $body_bytes_sent';
+access_log /var/log/nginx/access.log redacted;
+```
+
+The same concern applies to anything else that records URLs on the request path — tracing
+middleware, error reporters, CDN logs. The node itself compares digests and logs ticket ids, never
+secrets; keep the perimeter to the same standard. If a secret does land in a log, revoke that ticket
+(`lofi-node ticket revoke <id>`) — reissuing is one command and live sockets close within seconds.
+
 ## Bring your own relay
 
 Paired nodes hole-punch direct connections wherever possible; an
