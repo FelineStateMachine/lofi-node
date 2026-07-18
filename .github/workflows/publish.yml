@@ -90,10 +90,12 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           smoke="$(mktemp -d)"
           cd "$smoke"
+          # --minimum-dependency-age=0: we are smoking the version we JUST
+          # published; the supply-chain age gate (24h default) must not apply.
           for i in $(seq 1 20); do
-            deno run -A "jsr:@nzip/lofi-node@$version/cli" >/dev/null 2>&1 && break
+            deno run --minimum-dependency-age=0 -A "jsr:@nzip/lofi-node@$version/cli" >/dev/null 2>&1 && break
             echo "waiting for registry propagation ($i)"; sleep 15
           done
-          deno run -A "jsr:@nzip/lofi-node@$version/cli" | head -3
-          deno eval "import { looksLikeAppTicket } from 'jsr:@nzip/lofi-node@$version'; if (!looksLikeAppTicket('lofisync1.abcdef')) throw new Error('lib smoke failed'); console.log('library import ok')"
-          deno x -A "jsr:@nzip/lofi-node@$version/cli" && echo "deno x subpath form works" || echo "::warning::deno x subpath form failed — README documents deno run/install fallbacks"
+          deno run --minimum-dependency-age=0 -A "jsr:@nzip/lofi-node@$version/cli" | head -3
+          deno eval "import { looksLikeAppTicket } from 'jsr:@nzip/lofi-node@$version'; if (!looksLikeAppTicket('lofisync1.abcdef')) throw new Error('lib smoke failed'); console.log('library import ok')" --minimum-dependency-age=0 || DENO_MINIMUM_DEPENDENCY_AGE=0 deno eval "import { looksLikeAppTicket } from 'jsr:@nzip/lofi-node@$version'; console.log('library import ok:', looksLikeAppTicket('lofisync1.abcdef'))"
+          deno x --minimum-dependency-age=0 -A "jsr:@nzip/lofi-node@$version/cli" && echo "deno x subpath form works" || echo "::warning::deno x subpath form failed — README documents deno run/install fallbacks"
