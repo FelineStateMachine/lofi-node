@@ -6,6 +6,7 @@
 // panic outside a tokio context and ABORT the process under Deno.
 
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { MeshUnavailableError } from "../errors.ts";
 import { resolveIrohLib } from "./loader.ts";
 import { RELEASE_ARTIFACTS } from "./artifacts.ts";
@@ -101,7 +102,14 @@ export interface IrohAddon {
   maxFrame(): number;
 }
 
-const require = createRequire(import.meta.url);
+// Lazy + cwd-anchored: import.meta.url is an https: URL when this module is
+// served from the JSR registry, and createRequire refuses non-file URLs. The
+// anchor is irrelevant anyway — we only ever require absolute staged paths.
+let lazyRequire: ReturnType<typeof createRequire> | null = null;
+function nodeRequire(path: string): unknown {
+  lazyRequire ??= createRequire(pathToFileURL(`${Deno.cwd()}/`).href);
+  return lazyRequire(path);
+}
 
 /** Cache key for extracted artifacts — bump when the vendored tag or
  * lofi_ext surface changes (see native/iroh-js/UPSTREAM.md). */
@@ -236,7 +244,7 @@ export async function loadIrohAddon(explicitPath?: string): Promise<IrohAddon> {
   }
   let addon: IrohAddon;
   try {
-    addon = require(loadPath) as IrohAddon;
+    addon = nodeRequire(loadPath) as IrohAddon;
   } catch (e) {
     throw new MeshUnavailableError(`addon load failed for ${loadPath}: ${(e as Error).message}`);
   }
