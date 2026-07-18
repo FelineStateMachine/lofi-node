@@ -10,20 +10,20 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-linux_win_targets=(
+# Windows is NOT in this matrix: napi-build's *-gnu path needs a libnode.dll
+# import library (upstream ships Windows as msvc, delay-loaded against the
+# host exe). A Windows artifact of OUR crate needs cargo-xwin (msvc cross) or
+# a Windows CI runner — tracked in README.
+linux_targets=(
   x86_64-unknown-linux-gnu
   aarch64-unknown-linux-gnu
-  x86_64-pc-windows-gnu
 )
 
 artifact_name() {
-  case "$1" in
-    *windows*) echo "number0_iroh.dll" ;;
-    *)         echo "libnumber0_iroh.so" ;;
-  esac
+  echo "libnumber0_iroh.so"
 }
 
-for t in "${linux_win_targets[@]}"; do
+for t in "${linux_targets[@]}"; do
   echo "==> cargo zigbuild --release --target $t"
   cargo zigbuild --release --target "$t"
   name="$(artifact_name "$t")"

@@ -72,8 +72,13 @@ node.ticket();  // -> share with the peer
 Executed per [docs/port-iroh-js.md](docs/port-iroh-js.md): `native/iroh-js/`
 vendors upstream at v1.1.0 (endpoint/key/net/path/relay/ticket/watch modules;
 services dropped), plus `lofi_ext.rs`. db-iroh-ffi is no longer a dependency.
-Remaining from the plan: cross-compiled `prebuilt/<triple>/` artifacts, and
-surfacing `conn.stats()/paths()` into `SyncNodeStatus.mesh`.
+Live tunnel connection stats surface in `SyncNodeStatus.mesh.connections`.
+
+Prebuilts (`native/iroh-js/prebuilt/<triple>/`): macOS arm64 (built on a
+mac), Linux x86_64 + aarch64 (Nix host via `nix develop -c
+./scripts/cross-build.sh`). **Windows is open**: napi-build's `*-gnu` path
+needs a libnode.dll import lib (upstream ships msvc, delay-loaded) — needs
+cargo-xwin or a Windows CI runner.
 
 ## Tests
 
