@@ -62,21 +62,15 @@ node.ticket();  // -> share with the peer
   consuming lofi app pins (`2.0.0-alpha.53`). Wire compat across alphas is not
   guaranteed; bump in lockstep.
 
-## db-iroh-ffi reconciliation list (before publishing)
+## Native layer roadmap
 
-Found while consuming the crate generically (tracked for the de-game-ification
-pass in the db-iroh-ffi repo):
-
-1. **`db_accept` cancellation** — nothing wakes a parked accept; `db_node_close`
-   removes the handle but `incoming.pop()` never resolves. A daemon can only
-   tear down by process exit. Wants `db_node_wake`/accept-with-deadline.
-2. **Env var / naming** — `DOORBEARER_IROH` → neutral (we use `LOFI_NODE_IROH`);
-   crate/symbol prefix `db_` reads as "Doorbearer"; fine to keep, but README
-   framing ("the game") should go generic.
-3. **Prebuilt distribution** — versioned release artifacts with checksums
-   (in-repo prebuilts are fine for submodules, not for JSR consumers).
-4. **`MAX_FRAME`/`CHUNK` tuning** are sized to game payloads (64 MiB cap is
-   plenty for Jazz sync frames; just document the contract).
+db-iroh-ffi is the prove-out binding, not the destination. The plan
+([docs/port-iroh-js.md](docs/port-iroh-js.md)) replaces it with a trimmed
+vendor of upstream **n0-computer/iroh-ffi's `iroh-js`** (napi-rs) built in
+this repo: connections surface only, one Buffer-framing extension module,
+`UPSTREAM.md` provenance, upstream tag tracking. That dissolves the old
+db-iroh-ffi reconciliation list (accept cancellation comes free from
+`acceptNext() → null` on close; tickets become upstream `EndpointTicket`s).
 
 ## Tests
 
