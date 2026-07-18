@@ -68,3 +68,38 @@ Deno.test({
     await root.stop();
   },
 });
+
+Deno.test({
+  name: "runtime pair(): late upstream election without losing the port",
+  ignore: !available,
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const shared = {
+      appId: crypto.randomUUID(),
+      backendSecret: "lofi_backend_latepair",
+      adminSecret: "lofi_admin_latepair",
+    };
+    const root = await createSyncNode({ ...shared, inMemory: true });
+    const leaf = await createSyncNode({ ...shared, inMemory: true }); // unpaired
+    const portBefore = leaf.port;
+    assertEquals(leaf.status().upstream, "none");
+
+    await leaf.pair(root.ticket());
+
+    assertEquals(leaf.port, portBefore, "port survives re-pairing");
+    assert("peer" in (leaf.status().upstream as object), "upstream re-elected");
+    assert(await healthy(leaf.url), "leaf healthy on the same URL after pair");
+
+    // Jazz eagerly dials the new upstream through the tunnel.
+    await new Promise((r) => setTimeout(r, 3000));
+    const rootMesh = root.status().mesh;
+    assert(
+      rootMesh.state === "up" && rootMesh.connections.some((c) => c.direction === "in"),
+      "root sees the newly paired leaf's tunnel",
+    );
+
+    await leaf.stop();
+    await root.stop();
+  },
+});

@@ -52,12 +52,16 @@ export interface SyncNode {
   appId: string;
   /** Pairing ticket for this node; throws MeshUnavailableError if mesh is down. */
   ticket(): string;
+  /** Re-elect the upstream to a peer AT RUNTIME: swaps the tunnel and
+   * restarts the embedded Jazz server on the SAME port, so browser clients
+   * simply reconnect. Throws MeshUnavailableError if the mesh is down. */
+  pair(peerTicket: string): Promise<void>;
   status(): SyncNodeStatus;
   stop(): Promise<void>;
 }
 
 export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode> {
-  const upstream: UpstreamConfig = options.upstream ?? "none";
+  let upstream: UpstreamConfig = options.upstream ?? "none";
   const meshMode = options.mesh ?? "auto";
   const inMemory = options.inMemory ?? options.dataDir === undefined;
 
@@ -88,35 +92,44 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
   }
 
   // 2. Resolve the upstream election to a concrete URL for JazzServer.
-  let upstreamUrl: string | undefined;
   let tunnelListener: TunnelListener | null = null;
-  if (upstream !== "none" && "url" in (upstream as object)) {
-    upstreamUrl = (upstream as { url: string }).url;
-  } else if (upstream !== "none" && "peer" in (upstream as object)) {
-    const ticket = (upstream as { peer: string }).peer;
+  function resolveUpstream(
+    election: UpstreamConfig,
+  ): { url: string | undefined; listener: TunnelListener | null } {
+    if (election === "none") return { url: undefined, listener: null };
+    if ("url" in (election as object)) {
+      return { url: (election as { url: string }).url, listener: null };
+    }
+    const ticket = (election as { peer: string }).peer;
     if (!irohNode) {
       const reason = mesh.state === "unavailable" ? mesh.reason : "mesh is off";
       throw new MeshUnavailableError(`peer upstream requires the mesh: ${reason}`);
     }
-    tunnelListener = startTunnelListener(irohNode, ticket);
-    upstreamUrl = `ws://127.0.0.1:${tunnelListener.port}`;
+    const listener = startTunnelListener(irohNode, ticket);
+    return { url: `ws://127.0.0.1:${listener.port}`, listener };
   }
 
-  // 3. Jazz server.
-  let jazz: JazzHandle;
-  try {
-    jazz = await startJazz({
+  function startJazzFor(upstreamUrl: string | undefined, port: number | undefined) {
+    return startJazz({
       appId: options.appId,
       backendSecret: options.backendSecret,
       adminSecret: options.adminSecret,
-      port: options.listen?.port,
+      port,
       dataDir: options.dataDir ? `${options.dataDir}/jazz` : undefined,
       inMemory,
       upstreamUrl,
       allowLocalFirstAuth: options.allowLocalFirstAuth,
     });
+  }
+
+  // 3. Jazz server.
+  let jazz: JazzHandle;
+  const initial = resolveUpstream(upstream);
+  tunnelListener = initial.listener;
+  try {
+    jazz = await startJazzFor(initial.url, options.listen?.port);
   } catch (e) {
-    await tunnelListener?.close();
+    await initial.listener?.close();
     await irohNode?.close();
     throw e;
   }
@@ -128,6 +141,7 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
   }
 
   let stopped: Promise<void> | null = null;
+  let pairing: Promise<void> | null = null;
   return {
     url: jazz.url,
     port: jazz.port,
@@ -138,6 +152,26 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
         throw new MeshUnavailableError(reason);
       }
       return ticketString;
+    },
+    pair: (peerTicket: string) => {
+      if (stopped) return Promise.reject(new Error("node is stopped"));
+      if (pairing) return Promise.reject(new Error("a pair() is already in progress"));
+      pairing = (async () => {
+        try {
+          const keptPort = jazz.port;
+          // resolveUpstream throws (MeshUnavailableError) BEFORE teardown.
+          const next = resolveUpstream({ peer: peerTicket });
+          const oldListener = tunnelListener;
+          tunnelListener = next.listener;
+          await oldListener?.close();
+          await jazz.stop();
+          jazz = await startJazzFor(next.url, keptPort);
+          upstream = { peer: peerTicket };
+        } finally {
+          pairing = null;
+        }
+      })();
+      return pairing;
     },
     status: () => ({
       appId: options.appId,
