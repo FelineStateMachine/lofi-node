@@ -1,0 +1,17 @@
+# Keep the build context to what the compile actually needs. The committed
+# prebuilt addons (native/iroh-js/prebuilt) MUST stay in the context; the
+# Rust sources and build output need not.
+.git
+.github
+dist
+docs
+lofi-node-data
+node_modules
+tests
+tools
+native/iroh-js/src
+native/iroh-js/target
+native/iroh-js/Cargo.toml
+native/iroh-js/Cargo.lock
+native/iroh-js/build.rs
+*.md

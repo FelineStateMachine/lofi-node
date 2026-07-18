@@ -46,7 +46,9 @@ Procedure (tags on `main`, no dev branch):
 2. `deno task check && deno task test`, then inspect the artifact: `deno task publish:dry`.
 3. Commit, push, wait for ci green.
 4. `git tag v<version> && git push origin v<version>` — publish.yml verifies the tag matches
-   `deno.json`, publishes to JSR via OIDC, compiles the three target binaries, and creates the
-   GitHub release with binaries + raw addon assets + `SHA256SUMS`, then smokes the fresh publish
-   from the registry.
+   `deno.json`, publishes to JSR via OIDC, compiles the release binaries (darwin-arm64 and
+   linux-x64; linux-arm64 is withheld until jazz-napi publishes a linux-arm64-gnu package), creates
+   the GitHub release with binaries + raw addon assets + `SHA256SUMS`, smokes the fresh publish from
+   the registry, and builds, smokes, and pushes the container image to
+   `ghcr.io/felinestatemachine/lofi-node` (`<version>` and `latest` tags).
 5. JSR versions are immutable — mistakes fix forward as the next patch version.

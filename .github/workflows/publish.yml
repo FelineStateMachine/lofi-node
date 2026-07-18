@@ -56,18 +56,19 @@ jobs:
       - name: Publish to JSR
         run: deno publish
 
-      - name: Compile release binaries (3 targets)
+      # No linux-arm64 binary: jazz-napi ships no linux-arm64-gnu platform
+      # package, so that target cannot boot the Jazz server. Restore it when
+      # upstream publishes the package.
+      - name: Compile release binaries
         run: |
           deno task compile:darwin-arm64
           deno task compile:linux-x64
-          deno task compile:linux-arm64
 
       - name: Stage release assets
         run: |
           mkdir -p dist/assets
           cp dist/lofi-node-aarch64-apple-darwin dist/assets/
           cp dist/lofi-node-x86_64-unknown-linux-gnu dist/assets/
-          cp dist/lofi-node-aarch64-unknown-linux-gnu dist/assets/
           # Raw addon artifacts under the names artifacts.ts pins.
           cp native/iroh-js/prebuilt/aarch64-apple-darwin/libnumber0_iroh.dylib \
             dist/assets/libnumber0_iroh-aarch64-apple-darwin.dylib
@@ -99,3 +100,47 @@ jobs:
           deno run --minimum-dependency-age=0 -A "jsr:@nzip/lofi-node@$version/cli" | head -3
           deno eval --minimum-dependency-age=0 "import { looksLikeAppTicket } from 'jsr:@nzip/lofi-node@$version'; if (!looksLikeAppTicket('lofisync1.abcdef')) throw new Error('lib smoke failed'); console.log('library import ok')"
           deno x --minimum-dependency-age=0 -A "jsr:@nzip/lofi-node@$version/cli" && echo "deno x subpath form works" || echo "::warning::deno x probe failed (expected while the fresh version is inside the minimum-dependency-age window; deno x does not accept the override yet)"
+
+  docker:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # GHCR push
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image (linux/amd64)
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          image="ghcr.io/felinestatemachine/lofi-node"
+          docker build -t "$image:$version" -t "$image:latest" .
+
+      - name: Image smoke — init, start, health, mesh up
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          image="ghcr.io/felinestatemachine/lofi-node"
+          docker volume create smoke
+          docker run --rm -v smoke:/data "$image:$version" \
+            init --dir /data --port 4802 --public-url http://127.0.0.1:4802
+          docker run -d --name smoke -p 4802:4802 -v smoke:/data "$image:$version"
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:4802/health >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:4802/health
+          docker logs smoke 2>&1 | grep -q "mesh:       up"
+          docker rm -f smoke
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          image="ghcr.io/felinestatemachine/lofi-node"
+          docker push "$image:$version"
+          docker push "$image:latest"

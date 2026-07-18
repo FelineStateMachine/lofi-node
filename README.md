@@ -40,8 +40,23 @@ deno install -g -A -n lofi-node jsr:@nzip/lofi-node/cli    # persistent `lofi-no
 On first start the native iroh layer is downloaded from this repo's GitHub release for the matching
 version and sha256-verified against digests pinned inside the package. No Deno at all? Grab a
 compiled binary from the [releases](https://github.com/FelineStateMachine/lofi-node/releases) (macOS
-arm64, Linux x86_64/aarch64; the macOS binary is unsigned — clear quarantine with
-`xattr -d com.apple.quarantine lofi-node-*`).
+arm64 and Linux x86_64; the macOS binary is unsigned — clear quarantine with
+`xattr -d com.apple.quarantine lofi-node-*`). Linux aarch64 is pending an upstream jazz-napi
+`linux-arm64-gnu` build.
+
+Or run the container image:
+
+```sh
+docker run --rm -v lofi-node-data:/data ghcr.io/felinestatemachine/lofi-node \
+  init --dir /data --port 4802
+docker run -d --name lofi-node --network host -v lofi-node-data:/data \
+  ghcr.io/felinestatemachine/lofi-node
+```
+
+The image is linux/amd64 (arm64 hosts run it under emulation, per the jazz-napi gap above);
+[compose.yaml](compose.yaml) is the reference deployment, and
+[the deployment guide](https://lofi.host/node/docs/beyond-the-lan) covers networking and persistence
+choices.
 
 As a library:
 

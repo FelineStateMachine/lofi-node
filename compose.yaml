@@ -1,0 +1,25 @@
+# Reference deployment for a lofi-node container.
+#
+# First run (writes /data/config.json into the volume):
+#   docker compose run --rm lofi-node init --dir /data --port 4802 \
+#     --public-url https://sync.example.net
+# Then:
+#   docker compose up -d
+# Issue an app ticket:
+#   docker compose exec lofi-node lofi-node ticket issue --dir /data --label phone
+#
+# host networking: iroh hole-punching works best without the bridge NAT in
+# the path. Bridge mode with a published port serves apps fine, but paired
+# nodes are more likely to fall back to relayed traffic. See
+# https://lofi.host/node/docs/beyond-the-lan
+
+services:
+  lofi-node:
+    image: ghcr.io/felinestatemachine/lofi-node:latest
+    network_mode: host
+    volumes:
+      - lofi-node-data:/data
+    restart: unless-stopped
+
+volumes:
+  lofi-node-data:
