@@ -1,6 +1,6 @@
 {
   "name": "@nzip/lofi-node",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "license": "MIT",
   "description": "Self-hostable sync node for lofi apps: an embedded Jazz sync server with iroh peer-to-peer transport and ticket-gated access. Pair homes by ticket without static IPs or a cloud, issue revocable app tickets, and choose where your data lives.",
   "exports": {
@@ -51,9 +51,13 @@
   },
   "fmt": {
     "lineWidth": 100,
-    "exclude": ["native/iroh-js/"]
+    "exclude": [
+      "native/iroh-js/"
+    ]
   },
   "lint": {
-    "exclude": ["native/iroh-js/"]
+    "exclude": [
+      "native/iroh-js/"
+    ]
   }
 }
