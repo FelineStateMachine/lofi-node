@@ -61,6 +61,33 @@ The node's access gate validates the secret (timing-safe, digest vs digest), str
 
 Revocation semantics are identical for both scopes (401 / WS 4001).
 
+## Scope-down exchange (derive a sync ticket)
+
+A provision ticket can mint a **derived sync ticket** from itself, so a user who pastes a single
+provision ticket ends up with two capability tiers: the app persists the derived sync ticket at rest
+and keeps the provision ticket sealed (passkey-PRF) or memory-only.
+
+```
+POST <ticket.url>/derive-sync-ticket
+```
+
+- **Auth**: the provision-scoped secret in the URL path, like every gated request. A sync-scoped or
+  unknown secret gets the same `401 {"error":"invalid_ticket"}` as any unauthorized request —
+  nothing to enumerate. Non-POST methods on a provision ticket get `405`.
+- **Request body** (optional): `{ "label": "laptop" }`. Absent, the label defaults to
+  `<parent label> (sync)` (parent id when unlabelled).
+- **Response**: `200 {"v": 1, "id": "<ticket id>", "ticket": "lofisync1.…"}` — a complete
+  sync-scoped ticket string. Its `url` uses the node's configured public base (`--public-url`),
+  exactly like CLI-issued tickets; the secret is embedded once and never stored.
+
+The derived ticket's record carries the parent's id, and **revocation cascades**: once the parent is
+revoked (or its record removed), every ticket derived from it fails verification exactly like a
+revoked ticket — 401 on new requests, close code 4001 for live WebSockets. Revoking a derived ticket
+alone leaves its parent untouched. Derived tickets are always sync scope, so derivation cannot
+escalate and effective chains are one level deep; the parent check still walks the whole lineage.
+`lofi-node ticket list` shows derived tickets as `[from <parent id>]` and reports them REVOKED once
+their lineage is.
+
 ## Store-status preflight
 
 Against a store with **no deployed schema, client writes hang indefinitely** (lofi#109's pinned

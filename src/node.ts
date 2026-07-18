@@ -21,7 +21,12 @@ import {
   validateStorage,
 } from "./config.ts";
 import { type Gate, startGate } from "./gate.ts";
-import { type AppTicketRecord, AppTicketStore, encodeAppTicket } from "./appticket.ts";
+import {
+  type AppTicketRecord,
+  AppTicketStore,
+  encodeAppTicket,
+  isRevokedByLineage,
+} from "./appticket.ts";
 import { MeshUnavailableError } from "./errors.ts";
 
 /** Options for {@link createSyncNode}. */
@@ -75,7 +80,10 @@ export interface AppTicketInfo {
   id: string;
   scope: "sync" | "provision";
   label?: string;
+  /** Id of the ticket this one was derived from (scope-down exchange). */
+  parentId?: string;
   createdAt: string;
+  /** True when the ticket itself or any ancestor is revoked. */
   revoked: boolean;
 }
 
@@ -119,13 +127,14 @@ export interface SyncNode {
   stop(): Promise<void>;
 }
 
-function toTicketInfo(record: AppTicketRecord): AppTicketInfo {
+function toTicketInfo(record: AppTicketRecord, all: AppTicketRecord[]): AppTicketInfo {
   return {
     id: record.id,
     scope: record.scope ?? "sync",
     label: record.label,
+    parentId: record.parentId,
     createdAt: record.createdAt,
-    revoked: Boolean(record.revokedAt),
+    revoked: isRevokedByLineage(record, all),
   };
 }
 
@@ -259,6 +268,8 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
       store: ticketStore,
       appId: options.appId,
       adminSecret: options.adminSecret,
+      publicBase: options.publicUrl,
+      nodeTicket: ticketString ?? undefined,
     });
   }
 
@@ -275,9 +286,13 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
 
   // status() is sync; keep a ticket snapshot refreshed by every ticket call
   // and opportunistically by status() itself (next call sees fresh state).
-  let ticketSnapshot: AppTicketInfo[] = (await ticketStore.list()).map(toTicketInfo);
+  const snapshotTickets = async () => {
+    const records = await ticketStore.list();
+    return records.map((record) => toTicketInfo(record, records));
+  };
+  let ticketSnapshot: AppTicketInfo[] = await snapshotTickets();
   const refreshTickets = async () => {
-    ticketSnapshot = (await ticketStore.list()).map(toTicketInfo);
+    ticketSnapshot = await snapshotTickets();
     return ticketSnapshot;
   };
 

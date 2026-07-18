@@ -37,6 +37,10 @@ export interface AppTicketRecord {
   id: string;
   scope?: "sync" | "provision";
   label?: string;
+  /** Id of the ticket this one was derived from (the gate's scope-down
+   * exchange). Revocation cascades: a ticket is dead whenever any ancestor
+   * is revoked or missing. */
+  parentId?: string;
   secretHash: string;
   createdAt: string;
   revokedAt?: string;
@@ -109,15 +113,32 @@ function timingSafeEqualHex(a: string, b: string): boolean {
   return diff === 0;
 }
 
+/** True when the record or any ancestor in `all` is revoked or missing —
+ * derived tickets die with their parent, so the check walks the whole chain
+ * (bounded; a cycle would mean a corrupt file and counts as dead). */
+export function isRevokedByLineage(record: AppTicketRecord, all: AppTicketRecord[]): boolean {
+  const seen = new Set<string>();
+  let cursor: AppTicketRecord | undefined = record;
+  while (cursor) {
+    if (cursor.revokedAt) return true;
+    if (cursor.parentId === undefined) return false;
+    if (seen.has(cursor.id)) return true;
+    seen.add(cursor.id);
+    const parentId: string = cursor.parentId;
+    cursor = all.find((t) => t.id === parentId);
+  }
+  return true; // parent record missing
+}
+
 export type VerifyResult =
   | { status: "valid"; record: AppTicketRecord }
   | { status: "revoked"; record: AppTicketRecord }
   | { status: "unknown" };
 
 /** Issued-ticket persistence. File-backed when a dataDir is given (the CLI
- * writes it; a running daemon only READS, picking up changes via mtime — so
- * `ticket issue`/`revoke` need no IPC), in-memory otherwise (tests, ephemeral
- * nodes). */
+ * writes it for issue/revoke; the daemon reads via throttled mtime checks —
+ * so those commands need no IPC — and writes only when the gate's scope-down
+ * exchange derives a ticket), in-memory otherwise (tests, ephemeral nodes). */
 export class AppTicketStore {
   #path: string | null;
   #tickets: AppTicketRecord[] = [];
@@ -171,17 +192,29 @@ export class AppTicketStore {
     this.#mtime = (await Deno.stat(this.#path)).mtime?.getTime() ?? 0;
   }
 
+  /** Issue a ticket. `parentId` links a derived ticket to the ticket it was
+   * minted from — the derived ticket then dies with its parent. The parent
+   * must be live at issuance. Records without a parent serialize exactly as
+   * before (the field is omitted), so tickets.json stays v1. */
   async issue(
     label?: string,
     scope: "sync" | "provision" = "sync",
+    parentId?: string,
   ): Promise<{ record: AppTicketRecord; secret: string }> {
     await this.#reload();
+    if (parentId !== undefined) {
+      const parent = this.#tickets.find((t) => t.id === parentId);
+      if (!parent || isRevokedByLineage(parent, this.#tickets)) {
+        throw new Error(`parent ticket ${parentId} is unknown or revoked`);
+      }
+    }
     const secret = generateSecret();
     const secretHash = await hashSecret(secret);
     const record: AppTicketRecord = {
       id: secretHash.slice(0, 12),
       scope,
       label,
+      parentId,
       secretHash,
       createdAt: new Date().toISOString(),
     };
@@ -208,7 +241,8 @@ export class AppTicketStore {
 
   /** Timing-safe lookup by presented secret. Compares against EVERY record
    * (valid and revoked) so probers cannot distinguish unknown from revoked by
-   * timing; the gate returns 401 for both. */
+   * timing; the gate returns 401 for both. A derived ticket whose lineage is
+   * dead reports "revoked" exactly like a directly revoked one. */
   async verify(secret: string): Promise<VerifyResult> {
     await this.#maybeReload();
     const presented = await hashSecret(secret);
@@ -217,7 +251,7 @@ export class AppTicketStore {
       if (timingSafeEqualHex(presented, record.secretHash)) match = record;
     }
     if (!match) return { status: "unknown" };
-    return match.revokedAt
+    return isRevokedByLineage(match, this.#tickets)
       ? { status: "revoked", record: match }
       : { status: "valid", record: match };
   }

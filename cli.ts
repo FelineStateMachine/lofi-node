@@ -26,7 +26,12 @@ import {
 } from "./src/config.ts";
 import { createSyncNode } from "./src/node.ts";
 import { looksLikeTicket } from "./src/ticket.ts";
-import { AppTicketStore, encodeAppTicket, looksLikeAppTicket } from "./src/appticket.ts";
+import {
+  AppTicketStore,
+  encodeAppTicket,
+  isRevokedByLineage,
+  looksLikeAppTicket,
+} from "./src/appticket.ts";
 
 const USAGE = `lofi-node — self-hostable sync node for lofi apps
 
@@ -303,10 +308,12 @@ async function cmdTicket(args: Args) {
       return;
     }
     for (const t of tickets) {
+      // Lineage-aware: a derived ticket shows REVOKED once its parent is.
+      const dead = isRevokedByLineage(t, tickets);
       console.log(
-        `${t.id}  ${t.revokedAt ? "REVOKED" : "active "}  ${
+        `${t.id}  ${dead ? "REVOKED" : "active "}  ${
           (t.scope ?? "sync").padEnd(9)
-        }  ${t.createdAt}  ${t.label ?? ""}`,
+        }  ${t.createdAt}  ${t.label ?? ""}${t.parentId ? `  [from ${t.parentId}]` : ""}`,
       );
     }
     return;

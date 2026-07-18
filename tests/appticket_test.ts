@@ -1,5 +1,6 @@
-import { assert, assertEquals, assertStrictEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertStrictEquals } from "@std/assert";
 import {
+  type AppTicketRecord,
   AppTicketStore,
   decodeAppTicket,
   encodeAppTicket,
@@ -106,6 +107,64 @@ Deno.test("store: external file change is picked up (CLI → daemon hot-reload)"
       "revoked",
       "daemon sees CLI revocation",
     );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("store: parent revocation cascades to derived tickets", async () => {
+  const store = await AppTicketStore.load();
+  const { record: parent, secret: parentSecret } = await store.issue("laptop-admin", "provision");
+  const { record: child, secret: childSecret } = await store.issue(
+    "laptop-admin (sync)",
+    "sync",
+    parent.id,
+  );
+  assertEquals(child.parentId, parent.id);
+  assertEquals((await store.verify(parentSecret)).status, "valid");
+  assertEquals((await store.verify(childSecret)).status, "valid");
+
+  await store.revoke(parent.id);
+  assertEquals((await store.verify(parentSecret)).status, "revoked");
+  assertEquals(
+    (await store.verify(childSecret)).status,
+    "revoked",
+    "derived ticket rejects exactly like a revoked one",
+  );
+});
+
+Deno.test("store: issuing against an unknown or revoked parent throws", async () => {
+  const store = await AppTicketStore.load();
+  await assertRejects(() => store.issue("x", "sync", "no-such-id"), Error, "unknown or revoked");
+  const { record } = await store.issue("gone", "provision");
+  await store.revoke(record.id);
+  await assertRejects(() => store.issue("x", "sync", record.id), Error, "unknown or revoked");
+});
+
+Deno.test("store: parentId persists in v1 tickets.json; a removed parent kills the child", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const store = await AppTicketStore.load(dir);
+    const { record: parent } = await store.issue("admin", "provision");
+    const { secret: childSecret } = await store.issue("derived", "sync", parent.id);
+
+    const path = `${dir}/tickets.json`;
+    const file = JSON.parse(await Deno.readTextFile(path)) as {
+      v: number;
+      tickets: AppTicketRecord[];
+    };
+    assertEquals(file.v, 1, "file format stays v1 — parentId is an additive optional field");
+    assertEquals(file.tickets.find((t) => t.parentId)?.parentId, parent.id);
+
+    const reloaded = await AppTicketStore.load(dir);
+    assertEquals((await reloaded.verify(childSecret)).status, "valid");
+
+    // Remove the parent record entirely: the orphaned child must reject like
+    // a revoked ticket.
+    file.tickets = file.tickets.filter((t) => t.id !== parent.id);
+    await Deno.writeTextFile(path, JSON.stringify(file, null, 2) + "\n");
+    const orphaned = await AppTicketStore.load(dir);
+    assertEquals((await orphaned.verify(childSecret)).status, "revoked");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
