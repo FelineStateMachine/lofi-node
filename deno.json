@@ -8,7 +8,10 @@
   },
   "nodeModulesDir": "auto",
   "imports": {
-    "jazz-napi": "npm:jazz-napi@2.0.0-alpha.53"
+    "jazz-napi": "npm:jazz-napi@2.0.0-alpha.53",
+    "jazz-tools": "npm:jazz-tools@2.0.0-alpha.53",
+    "jazz-tools/testing": "npm:jazz-tools@2.0.0-alpha.53/testing",
+    "jazz-tools/permissions": "npm:jazz-tools@2.0.0-alpha.53/permissions"
   },
   "tasks": {
     "check": "deno check mod.ts cli.ts testing/mod.ts tests/",

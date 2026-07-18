@@ -27,7 +27,7 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     const shared = {
-      appId: `app_pair_${crypto.randomUUID().slice(0, 8)}`,
+      appId: crypto.randomUUID(),
       backendSecret: "lofi_backend_pairtest",
       adminSecret: "lofi_admin_pairtest",
     };

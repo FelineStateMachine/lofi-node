@@ -61,7 +61,7 @@ export async function initConfig(
   if (existing) return existing;
   const config: NodeConfig = {
     v: 1,
-    appId: overrides.appId ?? randomToken("app_local"),
+    appId: overrides.appId ?? crypto.randomUUID(),
     backendSecret: randomToken("lofi_backend"),
     adminSecret: randomToken("lofi_admin"),
     listenPort: overrides.listenPort,

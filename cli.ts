@@ -91,7 +91,11 @@ async function cmdStart(args: Args) {
   console.log(`\nCtrl-C to stop.`);
   Deno.addSignalListener("SIGINT", async () => {
     console.log("\nstopping…");
-    await node.stop();
+    try {
+      await node.stop();
+    } catch (e) {
+      console.error(`shutdown error: ${(e as Error).message}`);
+    }
     // Parked db_accept threads cannot be woken (upstream gap); exit hard.
     Deno.exit(0);
   });

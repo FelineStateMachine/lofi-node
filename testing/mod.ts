@@ -18,7 +18,7 @@ export interface TestMeshOptions {
  * share one appId and secrets (they model one user's fleet). */
 export async function createTestMesh(options: TestMeshOptions = {}): Promise<TestMesh> {
   const count = options.nodes ?? 2;
-  const appId = options.appId ?? `app_test_${crypto.randomUUID().slice(0, 8)}`;
+  const appId = options.appId ?? crypto.randomUUID();
   const backendSecret = `lofi_backend_test_${crypto.randomUUID().slice(0, 8)}`;
   const adminSecret = `lofi_admin_test_${crypto.randomUUID().slice(0, 8)}`;
 

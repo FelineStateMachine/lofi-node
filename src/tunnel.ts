@@ -56,9 +56,43 @@ function sanitizeCloseCode(code: number): number {
   return code;
 }
 
+/** kind "ws" (or absent, legacy): one WebSocket per conn. kind "http": one
+ * request/response per conn — HELLO{method,path,headers} + BIN body up,
+ * HELLO{status,headers} + BIN body back. Jazz leaves proxy their catalogue
+ * (schema/permissions) HTTP reads to their upstream, so the tunnel must carry
+ * plain HTTP as well as the sync WebSocket. */
 interface Hello {
+  kind?: "ws" | "http";
   path: string;
-  protocol: string | null;
+  protocol?: string | null;
+  method?: string;
+  headers?: Record<string, string>;
+}
+
+interface HttpResponseHead {
+  status: number;
+  headers: Record<string, string>;
+}
+
+const HOP_BY_HOP = new Set([
+  "connection",
+  "keep-alive",
+  "transfer-encoding",
+  "upgrade",
+  "host",
+  "content-length",
+]);
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+function forwardableHeaders(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of headers) {
+    if (!HOP_BY_HOP.has(name.toLowerCase())) out[name] = value;
+  }
+  return out;
 }
 
 /** Pump both directions between an OPEN WebSocket and an iroh conn until
@@ -150,11 +184,47 @@ export function startTunnelListener(
   peerAddr: Uint8Array,
   options: { port?: number } = {},
 ): TunnelListener {
+  async function proxyHttp(req: Request): Promise<Response> {
+    const url = new URL(req.url);
+    let conn: IrohConn;
+    try {
+      conn = await node.connect(peerAddr);
+    } catch {
+      return new Response("tunnel dial failed", { status: 502 });
+    }
+    try {
+      const hello: Hello = {
+        kind: "http",
+        method: req.method,
+        path: url.pathname + url.search,
+        headers: forwardableHeaders(req.headers),
+      };
+      conn.sendMsg(encodeFrame(FRAME_HELLO, encoder.encode(JSON.stringify(hello))));
+      conn.sendMsg(encodeFrame(FRAME_BIN, new Uint8Array(await req.arrayBuffer())));
+      const headFrame = await conn.recvMsg();
+      const bodyFrame = headFrame === null ? null : await conn.recvMsg();
+      if (headFrame === null || bodyFrame === null) {
+        return new Response("tunnel closed mid-response", { status: 502 });
+      }
+      const head = JSON.parse(decoder.decode(decodeFrame(headFrame).payload)) as HttpResponseHead;
+      debug("dialer: http", hello.method, hello.path, "→", head.status);
+      return new Response(toArrayBuffer(decodeFrame(bodyFrame).payload), {
+        status: head.status,
+        headers: head.headers,
+      });
+    } catch (e) {
+      debug("dialer: http proxy error", (e as Error).message);
+      return new Response("tunnel proxy error", { status: 502 });
+    } finally {
+      conn.close().catch(() => {});
+    }
+  }
+
   const server = Deno.serve(
     { hostname: "127.0.0.1", port: options.port ?? 0, onListen: () => {} },
     (req) => {
       if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
-        return new Response("lofi-node tunnel (WebSocket only)", { status: 426 });
+        return proxyHttp(req);
       }
       const requestedProtocol = req.headers.get("sec-websocket-protocol");
       const { socket, response } = Deno.upgradeWebSocket(
@@ -170,7 +240,11 @@ export function startTunnelListener(
       socket.addEventListener("open", async () => {
         try {
           const conn = await node.connect(peerAddr);
-          const hello: Hello = { path: url.pathname + url.search, protocol: requestedProtocol };
+          const hello: Hello = {
+            kind: "ws",
+            path: url.pathname + url.search,
+            protocol: requestedProtocol,
+          };
           debug("dialer: connected, HELLO", hello);
           conn.sendMsg(encodeFrame(FRAME_HELLO, encoder.encode(JSON.stringify(hello))));
           socket.removeEventListener("message", buffer);
@@ -201,6 +275,40 @@ export interface TunnelAcceptor {
 /** Acceptor side: bridge every inbound iroh conn to the local Jazz server. */
 export function runTunnelAcceptor(node: IrohNode, localWsUrl: string): TunnelAcceptor {
   let stopped = false;
+  const localHttpUrl = localWsUrl.replace(/^ws/, "http");
+
+  async function handleHttp(conn: IrohConn, hello: Hello): Promise<void> {
+    const bodyFrame = await conn.recvMsg();
+    if (bodyFrame === null) {
+      await conn.close();
+      return;
+    }
+    const body = decodeFrame(bodyFrame).payload;
+    const method = hello.method ?? "GET";
+    let head: HttpResponseHead;
+    let responseBody: Uint8Array;
+    try {
+      const res = await fetch(new URL(hello.path || "/", localHttpUrl), {
+        method,
+        headers: hello.headers,
+        body: method === "GET" || method === "HEAD" ? undefined : toArrayBuffer(body),
+      });
+      head = { status: res.status, headers: forwardableHeaders(res.headers) };
+      responseBody = new Uint8Array(await res.arrayBuffer());
+    } catch (e) {
+      debug("acceptor: local http error", (e as Error).message);
+      head = { status: 502, headers: {} };
+      responseBody = encoder.encode("local fetch failed");
+    }
+    debug("acceptor: http", method, hello.path, "→", head.status);
+    try {
+      conn.sendMsg(encodeFrame(FRAME_HELLO, encoder.encode(JSON.stringify(head))));
+      conn.sendMsg(encodeFrame(FRAME_BIN, responseBody));
+    } catch {
+      // peer gone
+    }
+    await conn.close();
+  }
 
   async function handleInbound(conn: IrohConn): Promise<void> {
     const first = await conn.recvMsg();
@@ -215,6 +323,10 @@ export function runTunnelAcceptor(node: IrohNode, localWsUrl: string): TunnelAcc
       hello = JSON.parse(decoder.decode(payload)) as Hello;
     } catch {
       await conn.close();
+      return;
+    }
+    if (hello.kind === "http") {
+      await handleHttp(conn, hello);
       return;
     }
     const target = new URL(hello.path || "/", localWsUrl);
