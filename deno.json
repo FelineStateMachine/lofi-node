@@ -16,7 +16,8 @@
   "tasks": {
     "check": "deno check mod.ts cli.ts testing/mod.ts tests/",
     "test": "deno test -A tests/",
-    "start": "deno run -A cli.ts start"
+    "start": "deno run -A cli.ts start",
+    "compile": "deno compile -A --include native/iroh-js/prebuilt --output dist/lofi-node cli.ts"
   },
   "fmt": {
     "lineWidth": 100

@@ -3,4 +3,5 @@ lofi-node-data/
 data/
 *.log
 native/iroh-js/target/
-native/iroh-js/*.node
+native/iroh-js/**/*.node
+dist/

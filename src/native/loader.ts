@@ -29,7 +29,11 @@ function exists(path: string): boolean {
   }
 }
 
-const HERE = new URL(".", import.meta.url).pathname;
+/** Repo-relative candidate, resolved through URL so `..` segments normalize —
+ * the embedded vfs of a `deno compile` binary does not resolve them itself. */
+function repoPath(rel: string): string {
+  return new URL(`../../${rel}`, import.meta.url).pathname;
+}
 
 export function resolveIrohLib(explicitPath?: string): IrohLibResolution {
   const platform = `${Deno.build.os}-${Deno.build.arch}`;
@@ -40,9 +44,9 @@ export function resolveIrohLib(explicitPath?: string): IrohLibResolution {
   const candidates = [
     explicitPath,
     Deno.env.get("LOFI_NODE_IROH"),
-    `${HERE}../../native/iroh-js/target/release/${triple.cargoFile}`,
+    repoPath(`native/iroh-js/target/release/${triple.cargoFile}`),
     `./native/iroh-js/target/release/${triple.cargoFile}`,
-    `${HERE}../../native/iroh-js/prebuilt/${triple.dir}/${triple.cargoFile}`,
+    repoPath(`native/iroh-js/prebuilt/${triple.dir}/${triple.cargoFile}`),
   ];
   for (const candidate of candidates) {
     if (!candidate) continue;

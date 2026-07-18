@@ -102,6 +102,59 @@ export interface IrohAddon {
 
 const require = createRequire(import.meta.url);
 
+/** Cache key for extracted artifacts — bump when the vendored tag or
+ * lofi_ext surface changes (see native/iroh-js/UPSTREAM.md). */
+export const IROH_JS_VERSION = "1.1.0-lofi.1";
+
+function osCacheDir(): string {
+  const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? ".";
+  switch (Deno.build.os) {
+    case "darwin":
+      return `${home}/Library/Caches`;
+    case "windows":
+      return Deno.env.get("LOCALAPPDATA") ?? `${home}/AppData/Local`;
+    default:
+      return Deno.env.get("XDG_CACHE_HOME") ?? `${home}/.cache`;
+  }
+}
+
+/** Give require() a real on-disk .node file. Prefer a sibling shim next to
+ * the artifact (dev flow: cargo output, refreshed on mtime). When the
+ * artifact lives in a read-only place — a `deno compile` binary's embedded
+ * vfs — extract to a version-keyed OS cache instead (atomic: tmp + rename,
+ * safe under concurrent launches). */
+function stageNodeArtifact(srcPath: string): string {
+  if (srcPath.endsWith(".node")) return srcPath;
+  const shim = srcPath.replace(/\.(dylib|so|dll)$/, ".node");
+  try {
+    const src = Deno.statSync(srcPath);
+    let stale = true;
+    try {
+      const dst = Deno.statSync(shim);
+      stale = (src.mtime?.getTime() ?? 1) > (dst.mtime?.getTime() ?? 0);
+    } catch {
+      // no shim yet
+    }
+    if (stale) Deno.copyFileSync(srcPath, shim);
+    return shim;
+  } catch {
+    // Sibling not writable (embedded vfs / read-only install): cache extract.
+  }
+  const dir = `${osCacheDir()}/lofi-node/iroh-js-${IROH_JS_VERSION}-${Deno.build.os}-${Deno.build.arch}`;
+  const target = `${dir}/iroh.node`;
+  try {
+    Deno.statSync(target);
+    return target; // version-keyed: presence means done
+  } catch {
+    // extract below
+  }
+  Deno.mkdirSync(dir, { recursive: true });
+  const tmp = `${target}.${Deno.pid}.tmp`;
+  Deno.writeFileSync(tmp, Deno.readFileSync(srcPath));
+  Deno.renameSync(tmp, target);
+  return target;
+}
+
 /** Load + probe the addon. Throws MeshUnavailableError with a precise reason
  * (no silent degradation — lofi's boot-gate ethos). */
 export function loadIrohAddon(explicitPath?: string): IrohAddon {
@@ -116,24 +169,15 @@ export function loadIrohAddon(explicitPath?: string): IrohAddon {
     );
   }
   // require() only loads native addons from `.node` files — cargo emits
-  // .dylib/.so/.dll, so maintain a sibling .node copy (refreshed on mtime).
-  let loadPath = resolved.path;
-  if (!loadPath.endsWith(".node")) {
-    const shim = loadPath.replace(/\.(dylib|so|dll)$/, ".node");
-    try {
-      const src = Deno.statSync(loadPath);
-      let stale = true;
-      try {
-        const dst = Deno.statSync(shim);
-        stale = (src.mtime?.getTime() ?? 1) > (dst.mtime?.getTime() ?? 0);
-      } catch {
-        // no shim yet
-      }
-      if (stale) Deno.copyFileSync(loadPath, shim);
-      loadPath = shim;
-    } catch (e) {
-      throw new MeshUnavailableError(`could not stage .node shim for ${loadPath}: ${(e as Error).message}`);
-    }
+  // .dylib/.so/.dll, and a compiled binary's embedded artifacts aren't
+  // directly loadable at all; stage a real .node file either way.
+  let loadPath: string;
+  try {
+    loadPath = stageNodeArtifact(resolved.path);
+  } catch (e) {
+    throw new MeshUnavailableError(
+      `could not stage .node artifact for ${resolved.path}: ${(e as Error).message}`,
+    );
   }
   let addon: IrohAddon;
   try {
