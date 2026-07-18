@@ -34,6 +34,7 @@
     "include": [
       "LICENSE",
       "README.md",
+      "docs/assets/brand/lofi-node-github-banner.png",
       "mod.ts",
       "cli.ts",
       "src",
