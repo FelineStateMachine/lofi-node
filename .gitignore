@@ -1,0 +1,4 @@
+node_modules/
+lofi-node-data/
+data/
+*.log

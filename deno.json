@@ -1,0 +1,21 @@
+{
+  "name": "@nzip/lofi-node",
+  "version": "0.1.0",
+  "exports": {
+    ".": "./mod.ts",
+    "./testing": "./testing/mod.ts",
+    "./cli": "./cli.ts"
+  },
+  "nodeModulesDir": "auto",
+  "imports": {
+    "jazz-napi": "npm:jazz-napi@2.0.0-alpha.53"
+  },
+  "tasks": {
+    "check": "deno check mod.ts cli.ts testing/mod.ts tests/",
+    "test": "deno test -A tests/",
+    "start": "deno run -A cli.ts start"
+  },
+  "fmt": {
+    "lineWidth": 100
+  }
+}

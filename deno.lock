@@ -1,0 +1,55 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@std/assert@1": "1.0.19",
+    "jsr:@std/internal@^1.0.12": "1.0.14",
+    "npm:jazz-napi@2.0.0-alpha.53": "2.0.0-alpha.53"
+  },
+  "jsr": {
+    "@std/assert@1.0.19": {
+      "integrity": "eaada96ee120cb980bc47e040f82814d786fe8162ecc53c91d8df60b8755991e",
+      "dependencies": [
+        "jsr:@std/internal"
+      ]
+    },
+    "@std/internal@1.0.14": {
+      "integrity": "291516b3d4c35024d6ffbc0a9df5bf4c64116e05b50012cf846710152d2ffdf7"
+    }
+  },
+  "npm": {
+    "@garden-co/jazz-napi-darwin-arm64@2.0.0-alpha.53": {
+      "integrity": "sha512-CqDtWl9+coVdCvMfhA5vQR8ZiqCztLj0QLG9NKg96nqZ/ZTB7Pt4JPT4ipfUf3COtzzkPY5MU6lv5zk92Kdp4Q==",
+      "os": ["darwin"],
+      "cpu": ["arm64"]
+    },
+    "@garden-co/jazz-napi-darwin-x64@2.0.0-alpha.53": {
+      "integrity": "sha512-WpFZq5nBOAuL8chWTSzqqcYfcjki57ngmgN0+TrFHbARNtX+BFl5HepIsHceJaDxV6iid9XWu0lGzBMZ+5osYw==",
+      "os": ["darwin"],
+      "cpu": ["x64"]
+    },
+    "@garden-co/jazz-napi-linux-x64-gnu@2.0.0-alpha.53": {
+      "integrity": "sha512-4hnSynKd5nOhwoV3W4KfQ5BRcqLaiBghDZQJG5187QdUOBvoOssJaBdO8cvvEAKPW4/c1jShwk1WSO1aCI8rtQ==",
+      "os": ["linux"],
+      "cpu": ["x64"]
+    },
+    "@garden-co/jazz-napi-win32-x64-msvc@2.0.0-alpha.53": {
+      "integrity": "sha512-TNPa9uHA29eq3q5LgaBP61D5ukLaSjcFGxcsMSMuFff5spXTMSFyo9YSeBe9DaLVQgdtmzjLgptOnZIVRXK0lw==",
+      "os": ["win32"],
+      "cpu": ["x64"]
+    },
+    "jazz-napi@2.0.0-alpha.53": {
+      "integrity": "sha512-5+EEUoahaNA2d0IqvYDlmrx9bjhLjpvkbt5Nab+C09EeKGnJcz7JJbofC0xuJDe++9I7/8cnYps7YcAYjdK3Ug==",
+      "optionalDependencies": [
+        "@garden-co/jazz-napi-darwin-arm64",
+        "@garden-co/jazz-napi-darwin-x64",
+        "@garden-co/jazz-napi-linux-x64-gnu",
+        "@garden-co/jazz-napi-win32-x64-msvc"
+      ]
+    }
+  },
+  "workspace": {
+    "dependencies": [
+      "npm:jazz-napi@2.0.0-alpha.53"
+    ]
+  }
+}
