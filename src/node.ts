@@ -14,8 +14,10 @@ import {
 import { type JazzHandle, startJazz } from "./jazz.ts";
 import {
   loadOrCreateIrohKey,
+  type RelayConfig,
   type StorageConfig,
   type UpstreamConfig,
+  validateRelay,
   validateStorage,
 } from "./config.ts";
 import { type Gate, startGate } from "./gate.ts";
@@ -50,6 +52,12 @@ export interface SyncNodeOptions {
   /** "auto": bring up iroh if the dylib resolves; stay up without it unless a
    * peer upstream NEEDS it. "off": plain Jazz server, dylib never loaded. */
   mesh?: "auto" | "off";
+  /** Relay election for the iroh endpoint: "n0" (default — the public
+   * n0-computer relays, fine for dev/testing), { urls } for operator-run
+   * relays, or "disabled" for direct connections only. Peers dial this node
+   * via the relay named in its pairing ticket, so no matching config is
+   * needed on the other side. */
+  relay?: RelayConfig;
   allowLocalFirstAuth?: boolean;
   /** Explicit addon path (otherwise LOFI_NODE_IROH / in-repo build). */
   irohLibPath?: string;
@@ -143,6 +151,8 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
   let upstream: UpstreamConfig = options.upstream ?? "none";
   const meshMode = options.mesh ?? "auto";
   const access = options.access ?? "open";
+  const relay: RelayConfig = options.relay ?? "n0";
+  validateRelay(relay);
 
   // 0. Storage election. Back-compat: explicit storage wins, else today's
   // rules (inMemory flag / absent dataDir → memory).
@@ -174,7 +184,7 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
       const key = options.dataDir
         ? await loadOrCreateIrohKey(options.dataDir)
         : crypto.getRandomValues(new Uint8Array(32));
-      irohNode = await IrohNode.open(addon, key);
+      irohNode = await IrohNode.open(addon, key, relay);
       ticketString = await irohNode.ticket();
       mesh = { state: "up", nodeId: irohNode.idString(), ticket: ticketString };
     } catch (e) {

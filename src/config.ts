@@ -12,6 +12,16 @@ export type UpstreamConfig = "none" | { url: string } | { peer: string };
  * any mounted location (NAS, synced volume) — validated writable at boot. */
 export type StorageConfig = { type: "sqlite"; path?: string } | { type: "memory" };
 
+/** Which relay infrastructure the node's iroh endpoint uses. Relays assist
+ * holepunching (address discovery) and carry traffic only when a direct
+ * connection cannot be established. "n0": the public n0-computer relays —
+ * rate-limited, no SLA, blessed for development and testing. { urls }:
+ * operator-run or dedicated relay servers (iroh-relay); the chosen relay
+ * travels inside this node's pairing tickets, so peers need no matching
+ * config. "disabled": no relays at all — direct connections only, which
+ * also forgoes relay-assisted address discovery. */
+export type RelayConfig = "n0" | "disabled" | { urls: string[] };
+
 /** Persisted daemon configuration (`<dataDir>/config.json`, version 2 —
  * v1 files migrate lazily on load). */
 export interface NodeConfig {
@@ -32,6 +42,8 @@ export interface NodeConfig {
   /** Base URL embedded into issued tickets, e.g. "http://192.168.1.10:4802". */
   publicUrl?: string;
   upstream: UpstreamConfig;
+  /** Relay election; absent means "n0" (the public relays). */
+  relay?: RelayConfig;
   allowLocalFirstAuth: boolean;
 }
 
@@ -47,6 +59,28 @@ export function validateStorage(storage: StorageConfig): void {
           SUPPORTED_STORAGE.join(" | ")
         } today; see docs/hosting-lofi-apps.md for provider recipes`,
     );
+  }
+}
+
+/** Throws with the offending value when a relay election is malformed:
+ * custom mode needs at least one parseable http(s) relay URL. */
+export function validateRelay(relay: RelayConfig): void {
+  if (relay === "n0" || relay === "disabled") return;
+  if (!Array.isArray(relay.urls) || relay.urls.length === 0) {
+    throw new Error('relay { urls } needs at least one relay URL (or use "n0" | "disabled")');
+  }
+  for (const url of relay.urls) {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error(
+        `relay URL "${url}" does not parse — expected e.g. https://relay.example.com`,
+      );
+    }
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      throw new Error(`relay URL "${url}" must be http(s), got ${parsed.protocol}`);
+    }
   }
 }
 
@@ -95,6 +129,7 @@ export async function loadConfig(dataDir: string): Promise<NodeConfig | null> {
     }
     const config = parsed as NodeConfig;
     validateStorage(config.storage);
+    if (config.relay !== undefined) validateRelay(config.relay);
     return config;
   } catch (e) {
     if (e instanceof Deno.errors.NotFound) return null;
@@ -113,7 +148,10 @@ export async function saveConfig(dataDir: string, config: NodeConfig): Promise<v
 export async function initConfig(
   dataDir: string,
   overrides: Partial<
-    Pick<NodeConfig, "appId" | "listenPort" | "upstream" | "access" | "storage" | "publicUrl">
+    Pick<
+      NodeConfig,
+      "appId" | "listenPort" | "upstream" | "access" | "storage" | "publicUrl" | "relay"
+    >
   > = {},
 ): Promise<NodeConfig> {
   const existing = await loadConfig(dataDir);
@@ -129,9 +167,11 @@ export async function initConfig(
     storage: overrides.storage ?? { type: "sqlite" },
     publicUrl: overrides.publicUrl,
     upstream: overrides.upstream ?? "none",
+    relay: overrides.relay,
     allowLocalFirstAuth: true,
   };
   validateStorage(config.storage);
+  if (config.relay !== undefined) validateRelay(config.relay);
   await saveConfig(dataDir, config);
   return config;
 }

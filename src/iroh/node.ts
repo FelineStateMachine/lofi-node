@@ -10,6 +10,7 @@
 // the endpoint closes — the acceptor loop's clean exit (proven at gate 0).
 
 import type { BiStream, Connection, Endpoint, IrohAddon } from "../native/addon.ts";
+import type { RelayConfig } from "../config.ts";
 
 const ALPN = [...new TextEncoder().encode("lofi-node/0")];
 
@@ -104,10 +105,21 @@ export class IrohNode {
     this.#endpoint = endpoint;
   }
 
-  static async open(addon: IrohAddon, secretKey: Uint8Array): Promise<IrohNode> {
+  static async open(
+    addon: IrohAddon,
+    secretKey: Uint8Array,
+    relay: RelayConfig = "n0",
+  ): Promise<IrohNode> {
     if (secretKey.length !== 32) throw new Error("iroh secret key must be 32 bytes");
     const builder = addon.Endpoint.builder();
-    builder.applyN0();
+    // Every mode starts from the n0 preset for its discovery + crypto
+    // provider; the relay election then narrows the relay map.
+    if (relay === "disabled") {
+      builder.applyN0DisableRelay();
+    } else {
+      builder.applyN0();
+      if (relay !== "n0") builder.relayMode(addon.RelayMode.customFromUrls(relay.urls));
+    }
     builder.secretKey([...secretKey]);
     builder.alpns([ALPN]);
     return new IrohNode(addon, await builder.bind());

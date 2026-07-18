@@ -16,7 +16,14 @@
  * @module
  */
 
-import { initConfig, loadConfig, saveConfig, type StorageConfig } from "./src/config.ts";
+import {
+  initConfig,
+  loadConfig,
+  type RelayConfig,
+  saveConfig,
+  type StorageConfig,
+  validateRelay,
+} from "./src/config.ts";
 import { createSyncNode } from "./src/node.ts";
 import { looksLikeTicket } from "./src/ticket.ts";
 import { AppTicketStore, encodeAppTicket, looksLikeAppTicket } from "./src/appticket.ts";
@@ -26,6 +33,7 @@ const USAGE = `lofi-node — self-hostable sync node for lofi apps
 Usage:
   lofi-node init   [--dir <dataDir>] [--app-id <id>] [--port <n>]
                    [--public-url <base>] [--open] [--storage-path <path>] [--memory]
+                   [--relay <url[,url…]>] [--no-relay]
   lofi-node start  [--dir <dataDir>]
   lofi-node pair   <node-ticket> [--dir <dataDir>]
   lofi-node ticket issue  [--label <s>] [--url <base>] [--provision] [--dir <dataDir>]
@@ -35,7 +43,11 @@ Usage:
 
 The data directory defaults to ./lofi-node-data. New inits are ticket-gated
 (--open opts out); app tickets are issued with \`ticket issue\` and pasted
-into the lofi app.`;
+into the lofi app.
+
+Relays default to n0's public servers — rate-limited, fine for development.
+For production point --relay at your own iroh-relay (comma-separated for
+more than one), or pass --no-relay for direct connections only.`;
 
 interface Args {
   command: string;
@@ -50,6 +62,8 @@ interface Args {
   memory: boolean;
   provision: boolean;
   storagePath?: string;
+  relayUrls: string[];
+  noRelay: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -60,6 +74,8 @@ function parseArgs(argv: string[]): Args {
     open: false,
     memory: false,
     provision: false,
+    relayUrls: [],
+    noRelay: false,
   };
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
@@ -73,6 +89,9 @@ function parseArgs(argv: string[]): Args {
     else if (arg === "--memory") args.memory = true;
     else if (arg === "--provision") args.provision = true;
     else if (arg === "--storage-path") args.storagePath = argv[++i];
+    else if (arg === "--relay") {
+      args.relayUrls.push(...(argv[++i] ?? "").split(",").map((u) => u.trim()).filter(Boolean));
+    } else if (arg === "--no-relay") args.noRelay = true;
     else args.positional.push(arg);
   }
   return args;
@@ -94,6 +113,12 @@ function describeStorage(storage: StorageConfig, dir: string): string {
   return `sqlite (${storage.path ?? `${dir}/jazz`})`;
 }
 
+function describeRelay(relay: RelayConfig | undefined): string {
+  if (relay === undefined || relay === "n0") return "n0 public relays (dev default)";
+  if (relay === "disabled") return "disabled (direct connections only)";
+  return `custom (${relay.urls.join(", ")})`;
+}
+
 function lanAddress(): string | null {
   try {
     for (const iface of Deno.networkInterfaces()) {
@@ -111,17 +136,34 @@ async function cmdInit(args: Args) {
   const storage: StorageConfig = args.memory
     ? { type: "memory" }
     : { type: "sqlite", path: args.storagePath };
+  if (args.noRelay && args.relayUrls.length > 0) {
+    fail("--no-relay and --relay are mutually exclusive");
+  }
+  const relay: RelayConfig | undefined = args.noRelay
+    ? "disabled"
+    : args.relayUrls.length > 0
+    ? { urls: args.relayUrls }
+    : undefined;
+  if (relay) {
+    try {
+      validateRelay(relay);
+    } catch (e) {
+      fail((e as Error).message);
+    }
+  }
   const config = await initConfig(args.dir, {
     appId: args.appId,
     listenPort: args.port,
     access: args.open ? "open" : "ticket",
     storage,
     publicUrl: args.publicUrl,
+    relay,
   });
   console.log(`initialized ${args.dir}`);
   console.log(`  app id:     ${config.appId}`);
   console.log(`  access:     ${config.access}`);
   console.log(`  storage:    ${describeStorage(config.storage, args.dir)}`);
+  console.log(`  relay:      ${describeRelay(config.relay)}`);
   console.log(`  listen:     ${config.listenPort ?? "(auto)"}`);
   if (config.access === "ticket") {
     console.log(`\nNext: lofi-node start --dir ${args.dir}`);
@@ -143,6 +185,7 @@ async function cmdStart(args: Args) {
     storage: config.storage,
     publicUrl: config.publicUrl,
     upstream: config.upstream,
+    relay: config.relay,
     allowLocalFirstAuth: config.allowLocalFirstAuth,
   });
   const status = node.status();
@@ -171,6 +214,7 @@ async function cmdStart(args: Args) {
   );
   if (status.mesh.state === "up") {
     console.log(`  mesh:       up (node ${status.mesh.nodeId.slice(0, 16)}…)`);
+    console.log(`  relay:      ${describeRelay(config.relay)}`);
     console.log(`  ticket:     ${status.mesh.ticket}`);
   } else if (status.mesh.state === "unavailable") {
     console.log(`  mesh:       UNAVAILABLE — ${status.mesh.reason}`);
@@ -287,6 +331,7 @@ async function cmdStatus(args: Args) {
   console.log(`  app id:     ${config.appId}`);
   console.log(`  access:     ${config.access}`);
   console.log(`  storage:    ${describeStorage(config.storage, args.dir)}`);
+  console.log(`  relay:      ${describeRelay(config.relay)}`);
   console.log(`  listen:     ${config.listenPort ?? "(auto)"}`);
   console.log(
     `  tickets:    ${tickets.filter((t) => !t.revokedAt).length} active / ${tickets.length} issued`,

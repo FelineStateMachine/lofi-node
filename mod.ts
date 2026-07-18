@@ -33,8 +33,14 @@ export type {
   SyncNodeOptions,
   SyncNodeStatus,
 } from "./src/node.ts";
-export { initConfig, loadConfig, saveConfig, validateStorage } from "./src/config.ts";
-export type { NodeConfig, StorageConfig, UpstreamConfig } from "./src/config.ts";
+export {
+  initConfig,
+  loadConfig,
+  saveConfig,
+  validateRelay,
+  validateStorage,
+} from "./src/config.ts";
+export type { NodeConfig, RelayConfig, StorageConfig, UpstreamConfig } from "./src/config.ts";
 export { looksLikeTicket } from "./src/ticket.ts";
 export { decodeAppTicket, encodeAppTicket, looksLikeAppTicket } from "./src/appticket.ts";
 export type { AppTicket } from "./src/appticket.ts";

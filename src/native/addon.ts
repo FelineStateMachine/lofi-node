@@ -81,9 +81,15 @@ export interface Endpoint {
   isClosed(): boolean;
 }
 
+/** Opaque relay election handle (constructed via the RelayMode factories). */
+export interface RelayMode {
+  toString(): string;
+}
+
 export interface EndpointBuilder {
   applyN0(): void;
   applyN0DisableRelay(): void;
+  relayMode(mode: RelayMode): void;
   secretKey(bytes: number[]): void;
   alpns(alpns: number[][]): void;
   bind(): Promise<Endpoint>;
@@ -94,6 +100,10 @@ export interface IrohAddon {
   EndpointTicket: {
     fromAddr(addr: EndpointAddr): EndpointTicket;
     fromString(s: string): EndpointTicket;
+  };
+  RelayMode: {
+    disabled(): RelayMode;
+    customFromUrls(urls: string[]): RelayMode;
   };
   SecretKey: { fromBytes(bytes: number[]): SecretKey; generate(): SecretKey };
   // lofi_ext
