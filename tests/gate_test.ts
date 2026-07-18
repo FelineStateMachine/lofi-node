@@ -1,8 +1,8 @@
 // Gate behavior against a stub upstream (no jazz, no iroh): routing,
 // secret verification, prefix stripping, WS re-origination, revocation.
 
-import { assertEquals } from "@std/assert";
-import { AppTicketStore } from "../src/appticket.ts";
+import { assert, assertEquals } from "@std/assert";
+import { AppTicketStore, decodeAppTicket } from "../src/appticket.ts";
 import { CLOSE_TICKET_REVOKED, startGate } from "../src/gate.ts";
 
 /** Stub upstream: echoes path+search+selected headers over HTTP; echoes
@@ -238,6 +238,106 @@ Deno.test({
         headers: { "X-Jazz-Admin-Secret": "client-supplied-fake" },
       });
       assertEquals((await res2.json()).admin, null, "stripped for sync scope");
+    }),
+});
+
+Deno.test({
+  name: "gate: derive-sync-ticket mints a linked sync ticket that syncs through the gate",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: () =>
+    withGate("ticket", async ({ gateUrl, store }) => {
+      const { record: parent, secret } = await store.issue("laptop-admin", "provision");
+      const res = await fetch(`${gateUrl}/t/${secret}/derive-sync-ticket`, {
+        method: "POST",
+        body: JSON.stringify({ label: "laptop" }),
+      });
+      assertEquals(res.status, 200);
+      const body = await res.json() as { v: number; id: string; ticket: string };
+      assertEquals(body.v, 1);
+      const derived = decodeAppTicket(body.ticket);
+      assert(derived !== null, "response carries a decodable lofisync1. ticket");
+      assertEquals(derived.appId, "stub-app");
+      assertEquals(derived.scope ?? "sync", "sync", "derived tickets are sync-scoped");
+      assertEquals(derived.label, "laptop");
+      assert(derived.url.startsWith(`${gateUrl}/t/`), "url uses the gate base");
+      const record = (await store.list()).find((t) => t.id === body.id);
+      assertEquals(record?.parentId, parent.id, "derived record links its parent");
+
+      // The derived ticket round-trips through the gate for sync traffic…
+      const ok = await fetch(`${derived.url}/apps/abc/echo`, {
+        headers: { "X-Jazz-Admin-Secret": "client-supplied-fake" },
+      });
+      assertEquals(ok.status, 200);
+      assertEquals((await ok.json()).admin, null, "sync scope: no admin injection");
+      // …but stays locked out of admin paths and further derivation.
+      const admin = await fetch(`${derived.url}/apps/stub-app/admin/schemas`, {
+        method: "POST",
+        body: "{}",
+      });
+      assertEquals(admin.status, 401);
+      assertEquals(await admin.json(), { error: "invalid_ticket" });
+
+      // Default label derives from the parent's label.
+      const res2 = await fetch(`${gateUrl}/t/${secret}/derive-sync-ticket`, { method: "POST" });
+      assertEquals(res2.status, 200);
+      const derived2 = decodeAppTicket((await res2.json() as { ticket: string }).ticket);
+      assertEquals(derived2?.label, "laptop-admin (sync)");
+    }),
+});
+
+Deno.test({
+  name: "gate: derive-sync-ticket 401s sync scope and unknown secrets with the invalid shape",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: () =>
+    withGate("ticket", async ({ gateUrl, store }) => {
+      const { secret } = await store.issue("sync-only"); // default scope
+      const res = await fetch(`${gateUrl}/t/${secret}/derive-sync-ticket`, { method: "POST" });
+      assertEquals(res.status, 401);
+      assertEquals(await res.json(), { error: "invalid_ticket" }, "same shape as invalid");
+      const bogus = "A".repeat(43);
+      const unknown = await fetch(`${gateUrl}/t/${bogus}/derive-sync-ticket`, { method: "POST" });
+      assertEquals(unknown.status, 401);
+      assertEquals(await unknown.json(), { error: "invalid_ticket" });
+    }),
+});
+
+Deno.test({
+  name: "gate: revoking the parent cascades — derived ticket 401s, live sockets close 4001",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: () =>
+    withGate("ticket", async ({ gateUrl, store }) => {
+      const { record: parent, secret } = await store.issue("admin", "provision");
+      const res = await fetch(`${gateUrl}/t/${secret}/derive-sync-ticket`, { method: "POST" });
+      const { ticket } = await res.json() as { ticket: string };
+      const derived = decodeAppTicket(ticket);
+      assert(derived !== null);
+      const before = await fetch(`${derived.url}/apps/abc/echo`);
+      assertEquals(before.status, 200);
+      await before.body?.cancel();
+
+      const ws = new WebSocket(`${derived.url.replace("http", "ws")}/apps/abc/ws`);
+      await new Promise<void>((resolve, reject) => {
+        ws.addEventListener("open", () => resolve());
+        ws.addEventListener("close", () => reject(new Error("closed before open")));
+      });
+      const closed = new Promise<CloseEvent>((resolve) =>
+        ws.addEventListener("close", (ev) => resolve(ev))
+      );
+
+      await store.revoke(parent.id);
+      const rejected = await fetch(`${derived.url}/apps/abc/echo`);
+      assertEquals(rejected.status, 401, "derived ticket dies with its parent");
+      assertEquals(await rejected.json(), { error: "invalid_ticket" }, "same shape as revoked");
+      const ev = await Promise.race([
+        closed,
+        new Promise<never>((_r, reject) =>
+          setTimeout(() => reject(new Error("no cascade close within 6s")), 6000)
+        ),
+      ]);
+      assertEquals(ev.code, CLOSE_TICKET_REVOKED, "sweep closes derived sockets too");
     }),
 });
 

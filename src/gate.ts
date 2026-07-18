@@ -9,7 +9,12 @@
 // internal Jazz port. WS is terminated and re-originated (safe: Jazz auth is
 // an in-band frame, proven by the iroh tunnel doing the same); HTTP streams.
 
-import { type AppTicketStore, SECRET_LENGTH } from "./appticket.ts";
+import {
+  type AppTicketStore,
+  encodeAppTicket,
+  isRevokedByLineage,
+  SECRET_LENGTH,
+} from "./appticket.ts";
 import { forwardableHeaders, sanitizeCloseCode } from "./tunnel.ts";
 
 const DEBUG = Deno.env.get("LOFI_NODE_DEBUG") === "1";
@@ -37,6 +42,13 @@ export interface GateOptions {
    * mode; the gate injects config's own for provision-scoped requests. */
   appId: string;
   adminSecret: string;
+  /** Base URL embedded into tickets minted by the derive endpoint (the
+   * node's publicUrl); defaults to the gate's own loopback URL — same
+   * election as CLI-issued tickets. */
+  publicBase?: string;
+  /** The node's iroh EndpointTicket, carried on derived tickets exactly like
+   * node-issued ones. */
+  nodeTicket?: string;
 }
 
 export interface Gate {
@@ -251,7 +263,7 @@ export function startGate(options: GateOptions): Gate {
     const records = await options.store.list();
     for (const [ticketId, sockets] of liveByTicket) {
       const record = records.find((r) => r.id === ticketId);
-      if (record && !record.revokedAt) continue;
+      if (record && !isRevokedByLineage(record, records)) continue;
       for (const socket of [...sockets]) {
         try {
           socket.close(CLOSE_TICKET_REVOKED, "ticket revoked");
@@ -298,6 +310,43 @@ export function startGate(options: GateOptions): Gate {
       const strippedPath = rest || "/";
       if (strippedPath === "/store-status" && !isUpgrade) {
         return storeStatus(targetBase, options.appId, options.adminSecret);
+      }
+      // Scope-down exchange: a provision ticket mints a derived sync ticket
+      // (the lofi app persists that one at rest, keeping the provision ticket
+      // sealed or memory-only). The derived record carries parentId, so
+      // revoking the provision ticket kills its derived tickets too. A sync
+      // ticket gets the SAME 401 as an invalid one (nothing to enumerate).
+      if (strippedPath === "/derive-sync-ticket" && !isUpgrade) {
+        if (scope !== "provision") {
+          debug("rejected sync-scope on derive", verdict.record.id);
+          return unauthorized();
+        }
+        if (req.method !== "POST") {
+          return new Response("method not allowed", { status: 405 });
+        }
+        let requested: string | undefined;
+        try {
+          const body = await req.json() as { label?: unknown };
+          if (typeof body.label === "string") requested = body.label;
+        } catch {
+          // empty or non-JSON body: fall through to the default label
+        }
+        const parent = verdict.record;
+        const label = requested ?? `${parent.label ?? parent.id} (sync)`;
+        const derived = await options.store.issue(label, "sync", parent.id);
+        const base = (options.publicBase ??
+          `http://127.0.0.1:${(server.addr as Deno.NetAddr).port}`).replace(/\/+$/, "");
+        const ticket = encodeAppTicket({
+          v: 1,
+          appId: options.appId,
+          url: `${base}/t/${derived.secret}`,
+          label,
+          node: options.nodeTicket,
+        });
+        debug("derived sync ticket", derived.record.id, "from", parent.id);
+        return new Response(JSON.stringify({ v: 1, id: derived.record.id, ticket }), {
+          headers: { "content-type": "application/json" },
+        });
       }
       // Admin/catalogue-mutating routes need provision scope; a sync ticket
       // gets the SAME 401 shape as an invalid ticket (nothing to enumerate).
