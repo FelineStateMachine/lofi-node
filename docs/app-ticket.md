@@ -47,8 +47,8 @@ The node's access gate validates the secret (timing-safe, digest vs digest), str
 ## Scopes: sync vs provision
 
 - **`sync`** (default): transport only. Admin/catalogue-mutating routes (`…/apps/<id>/admin/…`)
-  answer the SAME `401 {"error":"invalid_ticket"}` as an unknown secret — nothing to enumerate. This
-  is what lofi#109 calls "enrolling a ticket attaches transport only and never mutates the store."
+  answer the SAME `401 {"error":"invalid_ticket"}` as an unknown secret — nothing to enumerate.
+  Enrolling a ticket attaches transport only and never mutates the store.
 - **`provision`**: a strict superset of sync — everything above PLUS store administration. For
   provision-scoped HTTP requests the gate **injects the node's `X-Jazz-Admin-Secret` itself** (on
   `/admin/*` and on catalogue reads like `/schemas` and `/schema/<hash>`, which the merge-deploy
@@ -90,9 +90,9 @@ their lineage is.
 
 ## Store-status preflight
 
-Against a store with **no deployed schema, client writes hang indefinitely** (lofi#109's pinned
-failure surface) — so a sync-only client needs a preflight it can reach without the admin secret.
-Any valid ticket (sync scope included) may call:
+Against a store with **no deployed schema, client writes hang indefinitely** — so a sync-only client
+needs a preflight it can reach without the admin secret. Any valid ticket (sync scope included) may
+call:
 
 ```
 GET <ticket.url>/store-status
