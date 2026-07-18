@@ -9,7 +9,7 @@
 // internal Jazz port. WS is terminated and re-originated (safe: Jazz auth is
 // an in-band frame, proven by the iroh tunnel doing the same); HTTP streams.
 
-import { AppTicketStore, SECRET_LENGTH } from "./appticket.ts";
+import { type AppTicketStore, SECRET_LENGTH } from "./appticket.ts";
 import { forwardableHeaders, sanitizeCloseCode } from "./tunnel.ts";
 
 const DEBUG = Deno.env.get("LOFI_NODE_DEBUG") === "1";

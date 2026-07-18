@@ -1,7 +1,7 @@
 // Gate behavior against a stub upstream (no jazz, no iroh): routing,
 // secret verification, prefix stripping, WS re-origination, revocation.
 
-import { assert, assertEquals } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { AppTicketStore } from "../src/appticket.ts";
 import { CLOSE_TICKET_REVOKED, startGate } from "../src/gate.ts";
 
