@@ -21,7 +21,7 @@ export interface JazzHandle {
   stop(): Promise<void>;
 }
 
-export async function allocatePort(): Promise<number> {
+export function allocatePort(): number {
   const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
   const port = (listener.addr as Deno.NetAddr).port;
   listener.close();
@@ -29,7 +29,7 @@ export async function allocatePort(): Promise<number> {
 }
 
 export async function startJazz(options: JazzOptions): Promise<JazzHandle> {
-  const port = options.port ?? (await allocatePort());
+  const port = options.port ?? allocatePort();
   const server = await JazzServer.start({
     appId: options.appId,
     backendSecret: options.backendSecret,

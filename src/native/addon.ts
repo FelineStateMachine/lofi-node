@@ -140,7 +140,8 @@ function stageNodeArtifact(srcPath: string): string {
   } catch {
     // Sibling not writable (embedded vfs / read-only install): cache extract.
   }
-  const dir = `${osCacheDir()}/lofi-node/iroh-js-${IROH_JS_VERSION}-${Deno.build.os}-${Deno.build.arch}`;
+  const dir =
+    `${osCacheDir()}/lofi-node/iroh-js-${IROH_JS_VERSION}-${Deno.build.os}-${Deno.build.arch}`;
   const target = `${dir}/iroh.node`;
   try {
     Deno.statSync(target);

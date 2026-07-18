@@ -3,7 +3,7 @@
 // visible marker when the addon is not built. Sanitizers off: the addon's
 // tokio runtime and QUIC endpoints outlive the test body.
 
-import { assertEquals } from "jsr:@std/assert@1";
+import { assertEquals } from "@std/assert";
 import { loadIrohAddon } from "../src/native/addon.ts";
 import { IrohNode } from "../src/iroh/node.ts";
 import { resolveIrohLib } from "../src/native/loader.ts";

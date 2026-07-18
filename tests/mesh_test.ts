@@ -2,7 +2,7 @@
 // and chains upstream (createTestMesh). Convergence assertions with a real
 // Jazz client come next (lofi's Playwright fixtures pointed at node URLs).
 
-import { assert, assertEquals } from "jsr:@std/assert@1";
+import { assert, assertEquals } from "@std/assert";
 import { createTestMesh } from "../testing/mod.ts";
 
 async function healthy(wsUrl: string): Promise<boolean> {

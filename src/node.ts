@@ -184,12 +184,11 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
         }
         : mesh,
     }),
-    stop: () =>
-      (stopped ??= (async () => {
-        acceptor?.close();
-        await tunnelListener?.close();
-        await jazz.stop();
-        await irohNode?.close();
-      })()),
+    stop: () => (stopped ??= (async () => {
+      acceptor?.close();
+      await tunnelListener?.close();
+      await jazz.stop();
+      await irohNode?.close();
+    })()),
   };
 }

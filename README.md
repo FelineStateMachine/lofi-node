@@ -1,97 +1,96 @@
 # @nzip/lofi-node
 
-A self-hostable sync node for [lofi](../lofi) apps: a Jazz 2.0 sync server
-(jazz-napi `JazzServer`) plus iroh node-to-node transport
-([db-iroh-ffi](../db-iroh-ffi) via `Deno.dlopen`). Browsers keep speaking
-Jazz's WebSocket protocol — `JAZZ_SERVER_URL` points at a node and lofi's
-`adapter: "jazz"` contract (DX-SYNC-01) is untouched. iroh lives entirely in
-the daemon: two nodes pair by ticket and replicate over a WS-over-iroh tunnel,
-dialed by key, no static IPs.
+The first-class way to self-host the sync backend for
+[lofi](https://github.com/FelineStateMachine/lofi) apps: one daemon embedding a Jazz 2.0 sync server
+plus [iroh](https://iroh.computer) node-to-node transport. Browsers keep speaking Jazz's protocol —
+`JAZZ_SERVER_URL` points at your node and lofi's `adapter: "jazz"` contract is untouched. Two nodes
+pair by ticket and replicate over iroh: dialed by key, hole-punched, no static IPs, no cloud
+dependency.
 
-**Status: private prove-out.** The native layer is a trimmed vendor of
-upstream [n0-computer/iroh-ffi](https://github.com/n0-computer/iroh-ffi)'s
-`iroh-js` napi crate, built in-repo (`cargo build --release` in
-`native/iroh-js/`; see `native/iroh-js/UPSTREAM.md` for provenance and the
-tag-bump procedure). Override with `LOFI_NODE_IROH=<path>`.
+- Hosting walkthrough: [docs/hosting-lofi-apps.md](docs/hosting-lofi-apps.md)
+- Native layer provenance: [native/iroh-js/UPSTREAM.md](native/iroh-js/UPSTREAM.md)
+- License: [MIT](LICENSE)
 
-## Layout
-
-| Piece | Where |
-|---|---|
-| One-constructor library | `src/node.ts` (`createSyncNode`) |
-| WS+HTTP-over-iroh tunnel | `src/tunnel.ts` (HELLO/TEXT/BIN/CLOSE frames, 1 conn : 1 ws or 1 http request) |
-| Vendored iroh-js napi crate | `native/iroh-js/` (upstream + `lofi_ext.rs` Buffer framing) |
-| Addon loader + typed surface | `src/native/addon.ts`, `src/native/loader.ts` |
-| Adapter (IrohNode/IrohConn) | `src/iroh/node.ts` |
-| Ticket shape check (tickets are upstream `EndpointTicket` strings) | `src/ticket.ts` |
-| Jazz wrapper (pinned `2.0.0-alpha.53`) | `src/jazz.ts` |
-| CLI: init / start / pair / status | `cli.ts` |
-| In-process test mesh (no iroh) | `testing/mod.ts` |
-
-## Usage
+## Quick start
 
 ```sh
-deno run -A cli.ts init            # data dir, app id, secrets, iroh key
-deno run -A cli.ts start           # prints Jazz URL + pairing ticket
-deno run -A cli.ts pair LFN1.…     # persist peer election; restart to apply
+deno task compile                      # one self-contained binary (dist/lofi-node)
+dist/lofi-node init                    # data dir, app id, secrets, node key
+dist/lofi-node start                   # Jazz URL + pairing ticket
+dist/lofi-node pair endpoint…          # elect another node as upstream
 ```
 
-Library:
+Or embed it:
 
 ```ts
 import { createSyncNode } from "@nzip/lofi-node";
+
 const node = await createSyncNode({
-  appId, backendSecret, adminSecret,
+  appId,
+  backendSecret,
+  adminSecret,
   dataDir: "./data",
-  upstream: { peer: "LFN1.…" },   // or { url: "wss://cloud.jazz.tools/…" } or "none"
+  upstream: { peer: "endpoint…" }, // or { url: "wss://…" } or "none"
 });
-node.url;       // -> JAZZ_SERVER_URL
-node.ticket();  // -> share with the peer
+node.url; // -> JAZZ_SERVER_URL for the lofi app
+node.ticket(); // -> share with the peer node
+await node.pair(otherTicket); // re-elect upstream at runtime; port unchanged
+node.status(); // jazz health, upstream, mesh + live conn stats (direct/relay, rtt)
 ```
 
-## Design decisions
+## What you get
 
-- **napi async, not a flat C ABI.** The vendored iroh-js crate exposes real
-  Promises; `acceptNext()` resolves `null` on `endpoint.close()`, so the
-  accept loop exits cleanly. The one extension (`lofi_ext.rs`) adds
-  Buffer-based length-prefixed framing — upstream's `Array<number>` stream
-  I/O measured 7.1 MiB/s at gate 0. Never call the upstream watch APIs: at
-  v1.1.0 they panic outside a tokio context and abort the process.
-- **The tunnel terminates WS on both ends**, so the dialer forwards the upgrade
-  path/subprotocol in a HELLO frame and the acceptor replays them against its
-  local JazzServer.
-- **No silent degradation** (lofi's boot-gate ethos): a missing/unsupported
-  dylib leaves the Jazz server up but reports `mesh: unavailable — <reason>`,
-  and pairing throws `MeshUnavailableError`.
-- **Version invariant:** this package pins the exact `jazz-napi` alpha that the
-  consuming lofi app pins (`2.0.0-alpha.53`). Wire compat across alphas is not
-  guaranteed; bump in lockstep.
+- **A real Jazz sync server** (jazz-napi `JazzServer`, SQLite-backed, `/health` endpoint,
+  local-first auth) that any lofi app can use by URL.
+- **Node-to-node replication over iroh**: pairing tickets are upstream `EndpointTicket` strings;
+  sync and catalogue traffic (WS + HTTP) tunnel over QUIC, so two homes converge without port
+  forwarding. Administering either node reaches the root through the tunnel.
+- **Observability**: `status().mesh.connections` reports live tunnel connections with rtt and path
+  counts (direct vs relay).
+- **No silent degradation**: if the native layer can't load, the Jazz server still runs (LAN-only)
+  and `status()` says exactly why pairing is off.
+- **One binary**: `deno task compile` embeds the prebuilt native matrix and extracts it to a
+  version-keyed OS cache at first run.
 
-## Native layer
+## Where lofi-node fits
 
-Executed per [docs/port-iroh-js.md](docs/port-iroh-js.md): `native/iroh-js/`
-vendors upstream at v1.1.0 (endpoint/key/net/path/relay/ticket/watch modules;
-services dropped), plus `lofi_ext.rs`. db-iroh-ffi is no longer a dependency.
-Live tunnel connection stats surface in `SyncNodeStatus.mesh.connections`.
+- The data plane is Jazz 2.0 **alpha**, pinned exactly (`jazz-tools@2.0.0-alpha.53`); a node must
+  run the same alpha as the app it serves — treat version bumps as coordinated. Early-stage
+  software.
+- Platforms: macOS arm64, Linux x86_64/aarch64 (prebuilt in-repo; or `deno task native` with a Rust
+  toolchain). **Windows is a documented gap**: napi-build's `*-gnu` linking needs a libnode.dll
+  import library (upstream ships msvc, delay-loaded); a Windows artifact needs cargo-xwin or a
+  Windows CI runner. Until then Windows runs LAN-only with a typed `mesh: unavailable` reason.
+- Schema deploys to a self-hosted node use the jazz-tools schema-project flow — see the hosting
+  walkthrough, including the current alpha caveat on lofi's browser convergence gate (fails
+  identically against lofi's own managed dev server; lofi-node has behavior parity).
 
-Prebuilts (`native/iroh-js/prebuilt/<triple>/`): macOS arm64 (built on a
-mac), Linux x86_64 + aarch64 (Nix host via `nix develop -c
-./scripts/cross-build.sh`). **Windows is open**: napi-build's `*-gnu` path
-needs a libnode.dll import lib (upstream ships msvc, delay-loaded) — needs
-cargo-xwin or a Windows CI runner.
+## Architecture
 
-## Tests
+| Piece                                   | Where                                         |
+| --------------------------------------- | --------------------------------------------- |
+| One-constructor library                 | `src/node.ts` (`createSyncNode`)              |
+| WS+HTTP-over-iroh tunnel                | `src/tunnel.ts` (1 iroh conn : 1 ws / 1 http) |
+| Vendored iroh-js napi crate (iroh 1.x)  | `native/iroh-js/` (+ `lofi_ext.rs` framing)   |
+| Addon loader (dev shim / cache extract) | `src/native/addon.ts`, `src/native/loader.ts` |
+| Adapter over the addon                  | `src/iroh/node.ts` (`IrohNode`/`IrohConn`)    |
+| Jazz wrapper (pinned alpha)             | `src/jazz.ts`                                 |
+| CLI: init / start / pair / status       | `cli.ts`                                      |
+| In-process test mesh (no iroh)          | `testing/mod.ts`                              |
+
+The native layer is a trimmed, provenance-tracked vendor of upstream
+[n0-computer/iroh-ffi](https://github.com/n0-computer/iroh-ffi)'s `iroh-js` napi crate —
+module-level vendoring, byte-identical files, every local edit marked `// lofi-node:`, one extension
+module, tag bumps by `diff -r`. Design history: [docs/port-iroh-js.md](docs/port-iroh-js.md).
+
+## Developing lofi-node
 
 ```sh
-deno task test    # codec units always; iroh tunnel + jazz boot integration
-                  # auto-skip when the dylib / napi build is unavailable
+deno task native   # build the native addon (Rust; once, or per vendored change)
+deno task check    # fmt --check + lint + typecheck — the PR gate
+deno task test     # full suite; iroh/jazz integration auto-skips without the addon
 ```
 
-## Roadmap
-
-- Convergence test: lofi's two-client Playwright fixtures against two paired
-  nodes (the real spike exit-criterion).
-- Runtime `pair()` without restart (needs JazzServer restart orchestration).
-- `deno compile` packaging with embedded dylibs (doorbearer's
-  extract-to-versioned-cache loader).
-- Away-from-home story: `upstream: "cloud"` chaining behind one flag.
+Cross-compiling the prebuilt matrix runs on any x86_64 Linux host with Nix:
+`nix develop -c ./scripts/cross-build.sh` in `native/iroh-js/`. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for boundaries (vendoring rules, secrets policy, version pins).

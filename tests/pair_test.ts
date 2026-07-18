@@ -5,7 +5,7 @@
 // business — here we assert the topology comes up and both servers stay
 // healthy with the tunnel in the path.
 
-import { assert, assertEquals } from "jsr:@std/assert@1";
+import { assert, assertEquals } from "@std/assert";
 import { createSyncNode } from "../src/node.ts";
 import { resolveIrohLib } from "../src/native/loader.ts";
 

@@ -9,7 +9,7 @@
 // Test 2 is the full topology: each device on its own node, nodes paired over
 // the iroh tunnel.
 
-import { assert, assertEquals } from "jsr:@std/assert@1";
+import { assertEquals } from "@std/assert";
 import { createDb, schema as s } from "jazz-tools";
 import { deploy } from "jazz-tools/testing";
 import { definePermissions } from "jazz-tools/permissions";
@@ -75,7 +75,8 @@ async function runConvergenceFixture(deviceA: Db, deviceB: Db): Promise<void> {
   );
   await pollUntil(
     "device B observes the seed",
-    async () => (await deviceB.all(app.notes.where({ id: seed.id }), { tier: "global" })).length === 1,
+    async () =>
+      (await deviceB.all(app.notes.where({ id: seed.id }), { tier: "global" })).length === 1,
   );
 
   // Stage: concurrent offline edits.

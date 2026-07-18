@@ -1,6 +1,8 @@
 {
   "name": "@nzip/lofi-node",
   "version": "0.1.0",
+  "license": "MIT",
+  "description": "Self-hostable sync node for lofi apps: an embedded Jazz sync server with iroh node-to-node transport — pair homes by ticket, no static IPs.",
   "exports": {
     ".": "./mod.ts",
     "./testing": "./testing/mod.ts",
@@ -8,18 +10,26 @@
   },
   "nodeModulesDir": "auto",
   "imports": {
+    "@std/assert": "jsr:@std/assert@1",
     "jazz-napi": "npm:jazz-napi@2.0.0-alpha.53",
     "jazz-tools": "npm:jazz-tools@2.0.0-alpha.53",
     "jazz-tools/testing": "npm:jazz-tools@2.0.0-alpha.53/testing",
     "jazz-tools/permissions": "npm:jazz-tools@2.0.0-alpha.53/permissions"
   },
   "tasks": {
-    "check": "deno check mod.ts cli.ts testing/mod.ts tests/",
+    "check": "deno fmt --check && deno lint && deno check mod.ts cli.ts testing/mod.ts tests/",
     "test": "deno test -A tests/",
+    "fmt": "deno fmt",
+    "lint": "deno lint",
     "start": "deno run -A cli.ts start",
-    "compile": "deno compile -A --include native/iroh-js/prebuilt --output dist/lofi-node cli.ts"
+    "compile": "deno compile -A --include native/iroh-js/prebuilt --output dist/lofi-node cli.ts",
+    "native": "cargo build --release --manifest-path native/iroh-js/Cargo.toml"
   },
   "fmt": {
-    "lineWidth": 100
+    "lineWidth": 100,
+    "exclude": ["native/iroh-js/"]
+  },
+  "lint": {
+    "exclude": ["native/iroh-js/"]
   }
 }

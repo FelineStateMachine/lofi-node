@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Format, lint, typecheck
+        run: deno task check
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/iroh-js
+
+      - name: Build native addon
+        run: deno task native
+
+      - name: Full test suite (codec, tunnel, pair, convergence)
+        run: deno task test
+
+      - name: Compile self-contained binary
+        run: deno task compile && dist/lofi-node --help >/dev/null 2>&1 || true
