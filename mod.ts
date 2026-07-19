@@ -46,3 +46,9 @@ export { decodeAppTicket, encodeAppTicket, looksLikeAppTicket } from "./src/appt
 export type { AppTicket } from "./src/appticket.ts";
 export { CLOSE_TICKET_REVOKED } from "./src/gate.ts";
 export { MeshUnavailableError } from "./src/errors.ts";
+export {
+  classifyMutationError,
+  isPermanentMutationError,
+  MUTATION_ERROR_CLASSES,
+} from "./src/verdict.ts";
+export type { MutationErrorClass } from "./src/verdict.ts";
