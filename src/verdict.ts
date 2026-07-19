@@ -28,9 +28,15 @@ export type MutationErrorClass = "permanent" | "transient";
  * this session). Writes that violate the CURRENT locally-known policy or
  * schema never produce a code at all — the client runtime refuses them
  * synchronously at the call site, before any batch exists.
+ *
+ * `expired` (the store refused the write because it arrived past its declared
+ * deadline) is registered permanent: late arrival is final, since waiting or
+ * re-sending only arrives later still. The pinned alpha never emits it, so
+ * the entry is inert until a store does.
  */
 export const MUTATION_ERROR_CLASSES: Readonly<Record<string, MutationErrorClass>> = {
   permission_denied: "permanent",
+  expired: "permanent",
 };
 
 /**

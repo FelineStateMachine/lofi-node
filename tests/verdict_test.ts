@@ -14,8 +14,15 @@ Deno.test("verdict: permission_denied is permanent", () => {
   assert(isPermanentMutationError("permission_denied"));
 });
 
+Deno.test("verdict: expired is permanent", () => {
+  assertEquals(classifyMutationError("expired"), "permanent");
+  assert(isPermanentMutationError("expired"));
+});
+
 Deno.test("verdict: unknown codes classify transient", () => {
-  for (const code of ["", "store_unreachable", "some_future_code", "PERMISSION_DENIED"]) {
+  for (
+    const code of ["", "store_unreachable", "some_future_code", "PERMISSION_DENIED", "EXPIRED"]
+  ) {
     assertEquals(classifyMutationError(code), "transient", `code ${JSON.stringify(code)}`);
     assertEquals(isPermanentMutationError(code), false);
   }
