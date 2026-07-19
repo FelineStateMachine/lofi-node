@@ -66,10 +66,70 @@ the package exports (`classifyMutationError`, `MUTATION_ERROR_CLASSES`):
 | `transient` | No adjudication happened (unreachable, timeout)      | Write stays pending; keep waiting           |
 
 The pinned alpha emits exactly one rejection code over the sync protocol: `permission_denied`,
-classified permanent. Codes not in the registry classify as transient by design — an unrecognized
-code must never trigger irreversible compensation, because waiting is recoverable and a wrong
-`rejected` verdict is not. As the upstream code space grows (validation, schema enforcement), codes
-enter the registry here rather than in every consumer.
+classified permanent. The registry also carries `expired`, classified permanent; its semantics are
+the [expiry contract below](#expiry). Codes not in the registry classify as transient by design — an
+unrecognized code must never trigger irreversible compensation, because waiting is recoverable and a
+wrong `rejected` verdict is not. As the upstream code space grows (validation, schema enforcement),
+codes enter the registry here rather than in every consumer.
+
+## Expiry
+
+A write may declare a deadline: a wall-clock instant after which the app no longer wants it
+accepted. This section states the enforcement contract. **The pinned Jazz alpha does not enforce
+it** — no deadline travels on the wire today, no store rejects a late write, and the `expired` code
+is never emitted. The taxonomy entry and everything below define the behavior a store commits to
+once enforcement exists, so apps written against this page need no changes when it arrives.
+
+### The deadline is cleartext, and client-asserted
+
+Private transaction payloads are encrypted end to end; neither the sync node's access gate nor the
+store's engine can read them. A deadline the store is supposed to enforce therefore cannot live in
+the payload — it travels as an optional field on the transaction's cleartext envelope, asserted by
+the writing client as a wall-clock time. The store never inspects what the write does, only when it
+arrived.
+
+### The enforcement rule and the skew tolerance
+
+The store compares its own arrival time against the declared deadline and refuses the write when
+
+```
+arrival > expiresAt + tolerance
+```
+
+The refusal surfaces as a rejected batch fate with `code: "expired"`, through the same settlement
+path as `permission_denied`, with the same three properties: correlated to the originating batch id,
+re-derived on reconnect, and deterministic. `expired` classifies as **permanent**: late arrival is
+final, because waiting or re-sending only arrives later still.
+
+The tolerance is **two minutes**. Deadlines are client-asserted wall-clock times, so enforcement is
+only as exact as the two clocks involved: devices with OS time sync sit within seconds of true time,
+and two minutes is a wide margin above realistic drift while keeping the moment a client may safely
+give up close to the intent's own deadline. A device whose clock is wrong by more than the tolerance
+forfeits the guarantee for its own writes, which is consistent with the threat model below.
+
+### What expiry is for — and what it is not
+
+The threat model is the **honest client**. A deadline protects an app from its own stale intents: a
+write composed before a crash, a queue drained days later, an offer that should not surface after
+the window it was meant for. It is not an integrity control. The deadline is asserted by the writer,
+so a malicious client simply omits it, or writes a fresh timestamp; nothing about expiry constrains
+what a writer can do. Guarantees against hostile writers come from
+[permissions](provision-a-store.md), never from expiry.
+
+### The soundness property for clients
+
+Client-side expiry alone is unsound: a client can never prove that a pending write is not already in
+flight, or was not delivered before a crash, so compensating locally risks watching the write sync
+anyway. Server-side enforcement inverts this. The store accepts a write until `expiresAt` plus the
+tolerance on its own clock, so once a client — granting its own clock the same two-minute tolerance
+— observes its clock pass `expiresAt` plus twice the tolerance, future acceptance is impossible by
+construction: one tolerance for the store's acceptance window, one for the client's own possible
+offset. From that instant, retiring the write locally and running compensation is safe even for a
+device that never reconnects.
+
+Until enforcement exists, none of this holds: a declared deadline is ignored, an expired-looking
+pending write may still be accepted whenever the device reconnects, and clients must keep treating
+such writes as pending.
 
 ## Pending is not offline
 
