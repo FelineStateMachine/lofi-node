@@ -18,9 +18,19 @@ loopback-only Jazz server. This page is the route-level reference for a **ticket
 | `/t/<secret>/apps/<appId>/…`          | any scope   | Catalogue reads and other app routes, prefix-stripped and proxied.     |
 | `/t/<secret>/apps/<appId>/admin/…`    | `provision` | Store administration; the node's admin secret is injected server-side. |
 | `POST /t/<secret>/derive-sync-ticket` | `provision` | Mints a parent-linked, sync-scoped ticket (below).                     |
+| `POST /t/<secret>/pop/challenge`      | bound only  | Mints a proof-of-possession challenge (below).                         |
+| `POST /t/<secret>/pop/answer`         | bound only  | Verifies a device signature; answers with a connect token.             |
+| `/t/<secret>/c/<token>/…`             | bound only  | Every gated route of a bound ticket, behind its connect token.         |
 
 The `<secret>` is a 43-character base64url path segment; the gate compares digests in constant time,
 strips the prefix, preserves the query string, and forwards.
+
+On a **possession-bound** ticket (one derived with a `devicePublicKey`), the bare secret opens only
+`/health` and the `/pop/*` exchange; every other route answers `401` until the request carries a
+live connect token under `/c/<token>`. Unbound tickets are unaffected, and a bearer ticket calling
+`/pop/*` gets `400 {"error":"pop_not_bound"}`. The full exchange contract — signed-message bytes,
+single-use challenges, token lifetime — is normative in the app-ticket contract
+(`docs/app-ticket.md`).
 
 ## health
 

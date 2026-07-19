@@ -10,10 +10,15 @@
 // an in-band frame, proven by the iroh tunnel doing the same); HTTP streams.
 
 import {
+  type AppTicketPop,
   type AppTicketStore,
   encodeAppTicket,
+  hashSecret,
+  importPopKey,
   isRevokedByLineage,
+  popMessage,
   SECRET_LENGTH,
+  verifyPopSignature,
 } from "./appticket.ts";
 import { forwardableHeaders, sanitizeCloseCode } from "./tunnel.ts";
 
@@ -27,6 +32,19 @@ function debug(...args: unknown[]): void {
 export const CLOSE_TICKET_REVOKED = 4001;
 
 const TICKET_PATH = new RegExp(`^/t/([A-Za-z0-9_-]{${SECRET_LENGTH}})(/.*)?$`);
+const CONNECT_PATH = new RegExp(`^/c/([A-Za-z0-9_-]{${SECRET_LENGTH}})(/.*)?$`);
+
+/** How long an unanswered proof-of-possession challenge stays valid. */
+const CHALLENGE_TTL_MS = 120_000;
+/** Sliding lifetime of a connect token; refreshed on each authenticated use,
+ * so a live sync session never expires mid-flight. Tokens are memory-only —
+ * a node restart invalidates them and the client re-runs the exchange. */
+const CONNECT_TOKEN_TTL_MS = 86_400_000;
+/** Outstanding-challenge cap per ticket; the oldest is dropped past it. */
+const MAX_CHALLENGES_PER_TICKET = 32;
+
+type PopChallenge = { ticketId: string; nonce: string; expiresAt: number };
+type ConnectToken = { ticketId: string; expiresAt: number };
 
 export interface GateOptions {
   port: number;
@@ -245,6 +263,63 @@ export function startGate(options: GateOptions): Gate {
   const hostname = options.hostname ?? "0.0.0.0";
   const liveByTicket = new Map<string, Set<WebSocket>>();
 
+  // Proof-of-possession state, memory-only by design: challenges are
+  // single-use with a short TTL, and connect tokens are stored hashed (the
+  // node never stores secrets) with a sliding TTL.
+  const challenges = new Map<string, PopChallenge>();
+  const connectTokens = new Map<string, ConnectToken>();
+
+  const base64urlNoPad = (bytes: Uint8Array): string => {
+    let bin = "";
+    for (const b of bytes) bin += String.fromCharCode(b);
+    return btoa(bin).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  };
+
+  const mintChallenge = (ticketId: string): { id: string; nonce: string } => {
+    const perTicket = [...challenges.entries()].filter(([, c]) => c.ticketId === ticketId);
+    if (perTicket.length >= MAX_CHALLENGES_PER_TICKET) {
+      let oldestId = perTicket[0][0];
+      let oldestAt = perTicket[0][1].expiresAt;
+      for (const [id, challenge] of perTicket) {
+        if (challenge.expiresAt < oldestAt) {
+          oldestAt = challenge.expiresAt;
+          oldestId = id;
+        }
+      }
+      challenges.delete(oldestId);
+    }
+    const id = base64urlNoPad(crypto.getRandomValues(new Uint8Array(12)));
+    const nonce = base64urlNoPad(crypto.getRandomValues(new Uint8Array(32)));
+    challenges.set(id, { ticketId, nonce, expiresAt: Date.now() + CHALLENGE_TTL_MS });
+    return { id, nonce };
+  };
+
+  const answerChallenge = async (
+    ticketId: string,
+    pop: AppTicketPop,
+    body: { id?: unknown; sig?: unknown },
+  ): Promise<string | null> => {
+    if (typeof body.id !== "string" || typeof body.sig !== "string") return null;
+    const challenge = challenges.get(body.id);
+    // Single-use: the challenge dies on its first answer attempt, valid or not.
+    challenges.delete(body.id);
+    if (!challenge || challenge.ticketId !== ticketId || challenge.expiresAt < Date.now()) {
+      return null;
+    }
+    const verified = await verifyPopSignature(
+      pop.spki,
+      popMessage(options.appId, ticketId, challenge.nonce),
+      body.sig,
+    );
+    if (!verified) return null;
+    const token = base64urlNoPad(crypto.getRandomValues(new Uint8Array(32)));
+    connectTokens.set(await hashSecret(token), {
+      ticketId,
+      expiresAt: Date.now() + CONNECT_TOKEN_TTL_MS,
+    });
+    return token;
+  };
+
   const track = (ticketId: string, socket: WebSocket) => {
     let set = liveByTicket.get(ticketId);
     if (!set) liveByTicket.set(ticketId, set = new Set());
@@ -259,11 +334,28 @@ export function startGate(options: GateOptions): Gate {
   // and close sockets whose ticket flipped to revoked. Cheap (only runs while
   // gated sockets exist).
   const sweep = setInterval(async () => {
-    if (liveByTicket.size === 0) return;
+    // Expired proof-of-possession state ages out regardless of connections.
+    const now = Date.now();
+    for (const [id, challenge] of challenges) {
+      if (challenge.expiresAt < now) challenges.delete(id);
+    }
+    for (const [digest, token] of connectTokens) {
+      if (token.expiresAt < now) connectTokens.delete(digest);
+    }
+    if (liveByTicket.size === 0 && connectTokens.size === 0 && challenges.size === 0) return;
     const records = await options.store.list();
-    for (const [ticketId, sockets] of liveByTicket) {
+    const dead = (ticketId: string): boolean => {
       const record = records.find((r) => r.id === ticketId);
-      if (record && !isRevokedByLineage(record, records)) continue;
+      return !record || isRevokedByLineage(record, records);
+    };
+    for (const [id, challenge] of challenges) {
+      if (dead(challenge.ticketId)) challenges.delete(id);
+    }
+    for (const [digest, token] of connectTokens) {
+      if (dead(token.ticketId)) connectTokens.delete(digest);
+    }
+    for (const [ticketId, sockets] of liveByTicket) {
+      if (!dead(ticketId)) continue;
       for (const socket of [...sockets]) {
         try {
           socket.close(CLOSE_TICKET_REVOKED, "ticket revoked");
@@ -307,7 +399,77 @@ export function startGate(options: GateOptions): Gate {
         return unauthorized();
       }
       const scope = verdict.record.scope ?? "sync";
-      const strippedPath = rest || "/";
+      let strippedPath = rest || "/";
+      // Possession-bound tickets: the bare secret opens only the
+      // proof-of-possession exchange; everything else must ride a connect
+      // token minted by a fresh signature from the bound device key. A stolen
+      // ticket string alone therefore no longer connects.
+      if (verdict.record.pop) {
+        // Liveness stays reachable with the bare secret — it reveals nothing
+        // a valid ticket holder could not learn from the open /health route.
+        if (strippedPath === "/health" && !isUpgrade) {
+          return proxyHttp(req, targetBase, "/health");
+        }
+        if (strippedPath === "/pop/challenge" && !isUpgrade) {
+          if (req.method !== "POST") {
+            return new Response("method not allowed", { status: 405 });
+          }
+          const challenge = mintChallenge(verdict.record.id);
+          return new Response(
+            JSON.stringify({
+              v: 1,
+              id: challenge.id,
+              nonce: challenge.nonce,
+              expiresIn: CHALLENGE_TTL_MS / 1000,
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        }
+        if (strippedPath === "/pop/answer" && !isUpgrade) {
+          if (req.method !== "POST") {
+            return new Response("method not allowed", { status: 405 });
+          }
+          let body: { id?: unknown; sig?: unknown } = {};
+          try {
+            body = await req.json() as { id?: unknown; sig?: unknown };
+          } catch {
+            // malformed body falls through to the single rejection path
+          }
+          const token = await answerChallenge(verdict.record.id, verdict.record.pop, body);
+          if (token === null) {
+            debug("rejected pop answer", verdict.record.id);
+            return unauthorized();
+          }
+          debug("pop verified", verdict.record.id);
+          return new Response(
+            JSON.stringify({ v: 1, connect: token, expiresIn: CONNECT_TOKEN_TTL_MS / 1000 }),
+            { headers: { "content-type": "application/json" } },
+          );
+        }
+        const connect = strippedPath.match(CONNECT_PATH);
+        if (!connect) {
+          debug("rejected pop-bound bare path", verdict.record.id);
+          return unauthorized();
+        }
+        const [, connectSecret, connectRest] = connect;
+        const tokenDigest = await hashSecret(connectSecret);
+        const token = connectTokens.get(tokenDigest);
+        if (!token || token.ticketId !== verdict.record.id || token.expiresAt < Date.now()) {
+          debug("rejected connect token", verdict.record.id);
+          return unauthorized();
+        }
+        // Sliding lifetime: each authenticated use extends the token.
+        token.expiresAt = Date.now() + CONNECT_TOKEN_TTL_MS;
+        strippedPath = connectRest || "/";
+      } else if (strippedPath.startsWith("/pop/")) {
+        // The exchange only exists for bound tickets; a bearer ticket probing
+        // it is a client-configuration error, and the path must never leak
+        // upstream.
+        return new Response(JSON.stringify({ error: "pop_not_bound" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
       if (strippedPath === "/store-status" && !isUpgrade) {
         return storeStatus(targetBase, options.appId, options.adminSecret);
       }
@@ -325,15 +487,39 @@ export function startGate(options: GateOptions): Gate {
           return new Response("method not allowed", { status: 405 });
         }
         let requested: string | undefined;
+        let deviceKey: { alg?: unknown; spki?: unknown } | undefined;
         try {
-          const body = await req.json() as { label?: unknown };
+          const body = await req.json() as { label?: unknown; devicePublicKey?: unknown };
           if (typeof body.label === "string") requested = body.label;
+          if (typeof body.devicePublicKey === "object" && body.devicePublicKey !== null) {
+            deviceKey = body.devicePublicKey as { alg?: unknown; spki?: unknown };
+          }
         } catch {
           // empty or non-JSON body: fall through to the default label
         }
+        // An offered device key binds the derived ticket to possession. A
+        // malformed key is a client bug, not an auth probe — 400, not 401.
+        let pop: { alg: "ES256"; spki: string } | undefined;
+        if (deviceKey !== undefined) {
+          if (deviceKey.alg !== "ES256" || typeof deviceKey.spki !== "string") {
+            return new Response(JSON.stringify({ error: "invalid_device_key" }), {
+              status: 400,
+              headers: { "content-type": "application/json" },
+            });
+          }
+          try {
+            await importPopKey(deviceKey.spki);
+          } catch {
+            return new Response(JSON.stringify({ error: "invalid_device_key" }), {
+              status: 400,
+              headers: { "content-type": "application/json" },
+            });
+          }
+          pop = { alg: "ES256", spki: deviceKey.spki };
+        }
         const parent = verdict.record;
         const label = requested ?? `${parent.label ?? parent.id} (sync)`;
-        const derived = await options.store.issue(label, "sync", parent.id);
+        const derived = await options.store.issue(label, "sync", parent.id, pop);
         const base = (options.publicBase ??
           `http://127.0.0.1:${(server.addr as Deno.NetAddr).port}`).replace(/\/+$/, "");
         const ticket = encodeAppTicket({
@@ -343,10 +529,16 @@ export function startGate(options: GateOptions): Gate {
           label,
           node: options.nodeTicket,
         });
-        debug("derived sync ticket", derived.record.id, "from", parent.id);
-        return new Response(JSON.stringify({ v: 1, id: derived.record.id, ticket }), {
-          headers: { "content-type": "application/json" },
-        });
+        debug("derived sync ticket", derived.record.id, "from", parent.id, pop ? "pop" : "bearer");
+        return new Response(
+          JSON.stringify({
+            v: 1,
+            id: derived.record.id,
+            ticket,
+            ...(pop ? { pop: true } : {}),
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
       }
       // Admin/catalogue-mutating routes need provision scope; a sync ticket
       // gets the SAME 401 shape as an invalid ticket (nothing to enumerate).

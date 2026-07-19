@@ -74,11 +74,18 @@ POST <ticket.url>/derive-sync-ticket
 - **Auth**: the provision-scoped secret in the URL path, like every gated request. A sync-scoped or
   unknown secret gets the same `401 {"error":"invalid_ticket"}` as any unauthorized request —
   nothing to enumerate. Non-POST methods on a provision ticket get `405`.
-- **Request body** (optional): `{ "label": "laptop" }`. Absent, the label defaults to
-  `<parent label> (sync)` (parent id when unlabelled).
+- **Request body** (optional): `{ "label": "laptop" }`, and optionally a device public key to bind
+  the derived ticket to possession (below):
+  `{ "label": "laptop", "devicePublicKey": { "alg": "ES256", "spki": "<base64url DER SPKI>" } }`.
+  Absent a label, it defaults to `<parent label> (sync)` (parent id when unlabelled). A malformed or
+  wrong-curve `devicePublicKey` is `400 {"error":"invalid_device_key"}` — a client bug, not an auth
+  probe. Nodes that predate the field ignore it, and the response then carries no `pop` member: the
+  client must fall back to bearer behavior.
 - **Response**: `200 {"v": 1, "id": "<ticket id>", "ticket": "lofisync1.…"}` — a complete
-  sync-scoped ticket string. Its `url` uses the node's configured public base (`--public-url`),
-  exactly like CLI-issued tickets; the secret is embedded once and never stored.
+  sync-scoped ticket string, plus `"pop": true` when a device key was bound. Its `url` uses the
+  node's configured public base (`--public-url`), exactly like CLI-issued tickets; the secret is
+  embedded once and never stored. The ticket string itself is unchanged by binding — the client
+  knows the ticket is bound because it offered the key and received `pop: true`.
 
 The derived ticket's record carries the parent's id, and **revocation cascades**: once the parent is
 revoked (or its record removed), every ticket derived from it fails verification exactly like a
@@ -87,6 +94,42 @@ alone leaves its parent untouched. Derived tickets are always sync scope, so der
 escalate and effective chains are one level deep; the parent check still walks the whole lineage.
 `lofi-node ticket list` shows derived tickets as `[from <parent id>]` and reports them REVOKED once
 their lineage is.
+
+## Proof-of-possession binding
+
+A derived sync ticket can be bound to a device keypair at derive time (the `devicePublicKey` field
+above). On a bound ticket, the bare secret opens only the possession exchange; every other request
+must ride a connect token minted by a fresh signature from the bound key — an exfiltrated ticket
+string alone no longer connects.
+
+```
+POST <ticket.url>/pop/challenge
+→ 200 { "v": 1, "id": "<challenge id>", "nonce": "<43-char base64url>", "expiresIn": 120 }
+
+POST <ticket.url>/pop/answer   { "v": 1, "id": "<challenge id>", "sig": "<base64url raw r||s>" }
+→ 200 { "v": 1, "connect": "<43-char base64url>", "expiresIn": 86400 }
+→ 401 { "error": "invalid_ticket" }
+```
+
+- **Signed message** (exact bytes, UTF-8):
+  `"lofisync-pop-v1\n" + appId + "\n" + ticketId + "\n" + nonce` — the app id and ticket id bind the
+  signature to this store and ticket, the single-use nonce prevents replay. The signature is
+  WebCrypto ECDSA P-256 over SHA-256 in raw `r||s` form.
+- **One rejection shape.** Bad signatures, expired, unknown, and already-consumed challenges all
+  answer `401 {"error":"invalid_ticket"}` — nothing to enumerate. A challenge dies on its first
+  answer attempt, valid or not. Challenges expire after 120 seconds; at most 32 are outstanding per
+  ticket (the oldest is dropped past that).
+- **The connect token** is appended to the enrolled `serverUrl` as a path segment —
+  `<ticket.url>/c/<connect>` — which jazz clients preserve exactly like the ticket secret itself.
+  The node stores only the token's digest. Its lifetime slides: each authenticated use extends it,
+  so a live sync session never expires mid-flight. Tokens are memory-only — a node restart
+  invalidates them and the client re-runs the exchange; revocation kills them with the ticket.
+- **Unbound tickets are unchanged** (pure bearer), and a bearer ticket calling `/pop/*` gets
+  `400 {"error":"pop_not_bound"}`. Conformance fixtures for the signature format live in
+  `docs/fixtures/pop-fixtures.json` (a test-only extractable keypair — never use outside tests).
+- **Binding is not downgrade-proof against node replacement**: a node build that predates the `pop`
+  record field serves the ticket as pure bearer. The record field is forward-compatible
+  (`tickets.json` stays v1), so a later node honors bindings made before a rollback.
 
 ## Store-status preflight
 
@@ -143,8 +186,12 @@ setups hold the admin secret and can query Jazz directly.
 
 ## Security notes
 
-- The ticket is a **bearer credential** (256-bit entropy). Anyone holding it can sync as an
-  authorized transport peer; identity/permissions remain Jazz's local-first layer on top.
+- An unbound ticket is a **bearer credential** (256-bit entropy). Anyone holding it can sync as an
+  authorized transport peer; identity/permissions remain Jazz's local-first layer on top. A
+  possession-bound ticket downgrades theft of the string alone to nothing — connecting requires a
+  signature from the device key, which never leaves the device. Script running on the app's own
+  origin can still drive the signer while the page runs; binding defeats exfiltration, not live
+  same-origin abuse.
 - Plain http is acceptable on a trusted LAN; anything beyond that should front the gate with TLS
   (the URL scheme in the ticket may be `https`). Installed PWAs generally require a secure origin
   anyway.
