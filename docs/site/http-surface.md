@@ -9,17 +9,41 @@ loopback-only Jazz server. This page is the route-level reference for a **ticket
 
 ## Routes
 
-| Route                                 | Ticket      | Behavior                                                                  |
-| ------------------------------------- | ----------- | ------------------------------------------------------------------------- |
-| `GET /health`                         | none        | Liveness; proxied to Jazz. `200`, or `502` when the store is unreachable. |
-| `GET /t/<secret>/store-status`        | any scope   | Metadata-only schema preflight (below).                                   |
-| `/t/<secret>/apps/<appId>/ws`         | any scope   | WebSocket sync; re-originated toward Jazz with subprotocol forwarded.     |
-| `/t/<secret>/apps/<appId>/…`          | any scope   | Catalogue reads and other app routes, prefix-stripped and proxied.        |
-| `/t/<secret>/apps/<appId>/admin/…`    | `provision` | Store administration; the node's admin secret is injected server-side.    |
-| `POST /t/<secret>/derive-sync-ticket` | `provision` | Mints a parent-linked, sync-scoped ticket (below).                        |
+| Route                                 | Ticket      | Behavior                                                               |
+| ------------------------------------- | ----------- | ---------------------------------------------------------------------- |
+| `GET /health`                         | none        | Liveness (below). `200`, or `502` when the store is unreachable.       |
+| `GET /t/<secret>/health`              | any scope   | Same liveness under a ticket base; `401` once the ticket is revoked.   |
+| `GET /t/<secret>/store-status`        | any scope   | Metadata-only schema preflight (below).                                |
+| `/t/<secret>/apps/<appId>/ws`         | any scope   | WebSocket sync; re-originated toward Jazz with subprotocol forwarded.  |
+| `/t/<secret>/apps/<appId>/…`          | any scope   | Catalogue reads and other app routes, prefix-stripped and proxied.     |
+| `/t/<secret>/apps/<appId>/admin/…`    | `provision` | Store administration; the node's admin secret is injected server-side. |
+| `POST /t/<secret>/derive-sync-ticket` | `provision` | Mints a parent-linked, sync-scoped ticket (below).                     |
 
 The `<secret>` is a 43-character base64url path segment; the gate compares digests in constant time,
 strips the prefix, preserves the query string, and forwards.
+
+## health
+
+```jsonc
+// 200 — the store answered
+{ "status": "healthy" }
+```
+
+One liveness contract, every connection mode:
+
+- **Open mode** — Jazz serves `/health` directly on the public URL.
+- **Ticket mode** — the gate proxies it, unauthenticated at the top level (reachable before
+  enrollment) and under any valid ticket base, so `serverUrl`-relative polling works unchanged. A
+  revoked ticket gets `401` on its own base while the top level stays `200`: "node up, access gone"
+  stays distinguishable from "node unreachable".
+- **Peer mode** — the request rides the iroh tunnel to the peer's Jazz like any other HTTP.
+
+Responses are cheap in all modes (one loopback hop at most) and never hang on a dead store: the gate
+answers `502` when Jazz is unreachable. The client contract is composition, not a new primitive — an
+app derives its single connection observable from WebSocket lifecycle events (connect, close, auth
+failure) plus periodic `/health` polls, and uses it to label pending writes `offline` rather than
+leaving them silently waiting. Verdict semantics for those pending writes are on the
+[write verdicts](write-verdicts.md) page.
 
 ## store-status
 
