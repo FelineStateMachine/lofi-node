@@ -67,13 +67,16 @@ export interface GateOptions {
   /** The node's iroh EndpointTicket, carried on derived tickets exactly like
    * node-issued ones. */
   nodeTicket?: string;
+  /** Activity sink notified on every authenticated request and WS open —
+   * feeds the daemon-owned last-seen sidecar. */
+  activity?: { note(ticketId: string): void };
 }
 
 export interface Gate {
   port: number;
   url: string;
-  /** Live gated WS connections per ticket id. */
-  stats(): { ticketId: string; connections: number }[];
+  /** Live gated WS connections and last observed activity per ticket id. */
+  stats(): { ticketId: string; connections: number; lastSeenAt?: string }[];
   close(): Promise<void>;
 }
 
@@ -320,11 +323,18 @@ export function startGate(options: GateOptions): Gate {
     return token;
   };
 
+  const lastSeenAt = new Map<string, string>();
+  const seen = (ticketId: string) => {
+    lastSeenAt.set(ticketId, new Date().toISOString());
+    options.activity?.note(ticketId);
+  };
+
   const track = (ticketId: string, socket: WebSocket) => {
     let set = liveByTicket.get(ticketId);
     if (!set) liveByTicket.set(ticketId, set = new Set());
     set.add(socket);
     socket.addEventListener("close", () => {
+      seen(ticketId);
       set.delete(socket);
       if (set.size === 0) liveByTicket.delete(ticketId);
     });
@@ -399,6 +409,7 @@ export function startGate(options: GateOptions): Gate {
         return unauthorized();
       }
       const scope = verdict.record.scope ?? "sync";
+      seen(verdict.record.id);
       let strippedPath = rest || "/";
       // Possession-bound tickets: the bare secret opens only the
       // proof-of-possession exchange; everything else must ride a connect
@@ -567,11 +578,14 @@ export function startGate(options: GateOptions): Gate {
   return {
     port,
     url: `http://127.0.0.1:${port}`,
-    stats: () =>
-      [...liveByTicket.entries()].map(([ticketId, sockets]) => ({
+    stats: () => {
+      const ids = new Set([...liveByTicket.keys(), ...lastSeenAt.keys()]);
+      return [...ids].map((ticketId) => ({
         ticketId,
-        connections: sockets.size,
-      })),
+        connections: liveByTicket.get(ticketId)?.size ?? 0,
+        ...(lastSeenAt.has(ticketId) ? { lastSeenAt: lastSeenAt.get(ticketId) } : {}),
+      }));
+    },
     close: async () => {
       clearInterval(sweep);
       await server.shutdown();

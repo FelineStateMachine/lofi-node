@@ -171,7 +171,8 @@ Deno.test({
         ws.addEventListener("open", () => resolve());
         ws.addEventListener("close", () => reject(new Error("closed before open")));
       });
-      assertEquals(gate.stats(), [{ ticketId: record.id, connections: 1 }]);
+      const live = gate.stats().find((entry) => entry.ticketId === record.id);
+      assertEquals(live?.connections, 1);
 
       const closed = new Promise<CloseEvent>((resolve) =>
         ws.addEventListener("close", (ev) => resolve(ev))
@@ -184,7 +185,9 @@ Deno.test({
         ),
       ]);
       assertEquals(ev.code, CLOSE_TICKET_REVOKED);
-      assertEquals(gate.stats(), []);
+      // The socket is gone; the last-seen stamp for the ticket remains.
+      const after = gate.stats().find((entry) => entry.ticketId === record.id);
+      assertEquals(after?.connections, 0);
     }),
 });
 
