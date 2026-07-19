@@ -1,6 +1,13 @@
-# Upstream ask: server-enforced write expiry (`expiresAt` on the cleartext envelope)
+# Design record: engine-enforced write expiry (`expiresAt` on the submission envelope)
 
-Target: jazz / jazz-napi (engine + sync protocol). Consumer: lofi-node and the lofi effect system.
+Reference spec for the vendor surface lofi would prefer if jazz offered it: an `expiresAt` field on
+the sync submission envelope with an engine-enforced `expired` verdict. Recorded as
+FelineStateMachine/lofi#145 (upstream wishes are labeled reference issues; nothing is filed with
+jazz). Enforcement at the node layer is designed separately against the same contract in
+[write-verdicts](site/write-verdicts.md#expiry).
+
+Target surface: jazz / jazz-napi (engine + sync protocol). Consumer: lofi-node and the lofi effect
+system.
 
 ## Motivation
 
@@ -14,12 +21,19 @@ compensation safe, even for a device that never reconnects.
 
 ## Requested surface
 
-1. **Optional `expiresAt` on the transaction/batch cleartext envelope.** Private transaction
-   payloads are encrypted, so the engine cannot inspect them; the deadline must live on the sealed
-   batch submission's cleartext envelope (alongside the batch digest and captured frontier), as an
-   optional client-asserted wall-clock timestamp (epoch milliseconds, UTC). Absent means "never
-   expires" — every existing write keeps its meaning. The field should be covered by the batch
-   digest so it cannot be stripped or altered in transit without invalidating the submission.
+1. **Optional `expiresAt` on the sealed batch submission envelope.** The deadline belongs on the
+   envelope, not in row data: enforcement must read only the declared deadline and an arrival clock,
+   never interpret application payloads (which may include client-sealed columns). At the pinned
+   alpha the envelope is
+   `SealedBatchSubmission { batch_id, mode, target_branch_name,
+   batch_digest, members, captured_frontier }`
+   — no expiry or deadline field exists anywhere in the submission path. The design adds
+   `expires_at` as an optional client-asserted wall-clock timestamp (epoch milliseconds, UTC).
+   Absent means "never expires" — every existing write keeps its meaning. The field must be covered
+   by the batch digest so it cannot be stripped or altered in transit without invalidating the
+   submission; today the digest is computed over the member manifest only (a domain-tagged hash of
+   member count, object ids, and row digests), so covering `expires_at` means a new manifest version
+   in the digest preimage.
 
 2. **Engine-side comparison at the sync node.** On first authoritative adjudication of a batch, the
    engine compares its own arrival time against `expiresAt` and rejects when
@@ -87,5 +101,8 @@ db.onMutationError((event) => {
 });
 ```
 
-Wire-level sketch: `SealedBatchSubmission` gains an optional `expires_at` (epoch ms), and
-`BatchFate::Rejected` carries `code: "expired"`. No other message changes.
+Wire-level sketch: `SealedBatchSubmission` gains an optional `expires_at` (epoch ms) covered by a v2
+batch-digest manifest, and `BatchFate::Rejected` — whose `code` is an open string, not a closed
+enum, so no wire-format change is needed for the new code — carries `"expired"`. The
+`captured_frontier` field is compatibility-only at the pinned alpha (conflicts are validated from
+per-row parents) and plays no part in this design. No other message changes.
