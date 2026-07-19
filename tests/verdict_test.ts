@@ -14,8 +14,33 @@ Deno.test("verdict: permission_denied is permanent", () => {
   assert(isPermanentMutationError("permission_denied"));
 });
 
+Deno.test("verdict: transaction_conflict is permanent", () => {
+  assertEquals(classifyMutationError("transaction_conflict"), "permanent");
+  assert(isPermanentMutationError("transaction_conflict"));
+});
+
+Deno.test("verdict: permissions_head_missing is permanent", () => {
+  assertEquals(classifyMutationError("permissions_head_missing"), "permanent");
+  assert(isPermanentMutationError("permissions_head_missing"));
+});
+
+Deno.test("verdict: expired is permanent", () => {
+  assertEquals(classifyMutationError("expired"), "permanent");
+  assert(isPermanentMutationError("expired"));
+});
+
+Deno.test("verdict: invalid_batch_submission stays unregistered (transient)", () => {
+  // Unreachable from the public API by construction (the registry doc comment
+  // records why); it must not classify permanent until a rejection carrying it
+  // has actually been observed.
+  assertEquals(classifyMutationError("invalid_batch_submission"), "transient");
+  assertEquals(isPermanentMutationError("invalid_batch_submission"), false);
+});
+
 Deno.test("verdict: unknown codes classify transient", () => {
-  for (const code of ["", "store_unreachable", "some_future_code", "PERMISSION_DENIED"]) {
+  for (
+    const code of ["", "store_unreachable", "some_future_code", "PERMISSION_DENIED", "EXPIRED"]
+  ) {
     assertEquals(classifyMutationError(code), "transient", `code ${JSON.stringify(code)}`);
     assertEquals(isPermanentMutationError(code), false);
   }
