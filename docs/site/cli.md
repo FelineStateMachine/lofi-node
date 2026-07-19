@@ -54,9 +54,12 @@ message). Re-electable at runtime; the public port does not change.
 `--provision` mints a provision-scoped ticket that can also administer the store
 ([scopes](tickets-explained.md)).
 
-`list` shows every issued ticket: id, scope, label, issued time, and revocation state — including
-tickets revoked through their lineage, since a [derived sync ticket](tickets-explained.md) dies with
-its parent provision ticket. `revoke <id>` invalidates one (and everything derived from it); a
+`list` shows every issued ticket: id, scope, label, issued time, last-seen time, and revocation
+state — including tickets revoked through their lineage, since a
+[derived sync ticket](tickets-explained.md) dies with its parent provision ticket. Last-seen comes
+from a daemon-written sidecar (`ticket-activity.json`, flushed about once a minute), so it answers
+"is that phone still using this ticket?" without any daemon IPC; `-` means the ticket has not been
+seen since the sidecar existed. `revoke <id>` invalidates one (and everything derived from it); a
 running daemon picks the change up within seconds and closes the affected live connections with
 close code 4001 — no restart, no IPC.
 
@@ -64,4 +67,6 @@ close code 4001 — no restart, no IPC.
 
 Prints configuration and live state without changing anything: access mode, storage, relay election,
 issued tickets, upstream election, and mesh state (up with connection stats, off, or unavailable
-with the reason).
+with the reason). Embedders get the same data programmatically from `node.status()`, which also
+carries `gatedConnections` — live gated connection counts and last-seen per ticket, joined with
+labels.

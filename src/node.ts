@@ -21,6 +21,7 @@ import {
   validateStorage,
 } from "./config.ts";
 import { type Gate, startGate } from "./gate.ts";
+import { TicketActivity } from "./ticket-activity.ts";
 import {
   type AppTicketRecord,
   AppTicketStore,
@@ -93,6 +94,14 @@ export interface SyncNodeStatus {
   access: "open" | "ticket";
   jazz: { url: string; port: number; storage: StorageConfig };
   tickets: AppTicketInfo[];
+  /** Live gated connections and last observed activity, joined with labels;
+   * empty on open-mode nodes. */
+  gatedConnections: {
+    ticketId: string;
+    connections: number;
+    lastSeenAt?: string;
+    label?: string;
+  }[];
   upstream: UpstreamConfig;
   mesh: MeshStatus;
 }
@@ -259,6 +268,7 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
 
   // 3b. App tickets + gate (ticket mode).
   const ticketStore = await AppTicketStore.load(options.dataDir);
+  const ticketActivity = await TicketActivity.load(options.dataDir);
   let gate: Gate | null = null;
   if (gated) {
     gate = startGate({
@@ -270,6 +280,7 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
       adminSecret: options.adminSecret,
       publicBase: options.publicUrl,
       nodeTicket: ticketString ?? undefined,
+      activity: ticketActivity,
     });
   }
 
@@ -362,6 +373,10 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
         access,
         jazz: { url: jazz.url, port: jazz.port, storage },
         tickets: ticketSnapshot,
+        gatedConnections: (gate?.stats() ?? []).map((entry) => ({
+          ...entry,
+          label: ticketSnapshot.find((t) => t.id === entry.ticketId)?.label,
+        })),
         upstream,
         mesh: mesh.state === "up"
           ? {
@@ -375,6 +390,7 @@ export async function createSyncNode(options: SyncNodeOptions): Promise<SyncNode
       acceptor?.close();
       await tunnelListener?.close();
       await gate?.close();
+      await ticketActivity.flush().catch(() => {});
       await jazz.stop();
       await irohNode?.close();
     })()),

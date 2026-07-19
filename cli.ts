@@ -32,6 +32,7 @@ import {
   isRevokedByLineage,
   looksLikeAppTicket,
 } from "./src/appticket.ts";
+import { readTicketActivity } from "./src/ticket-activity.ts";
 
 const USAGE = `lofi-node — self-hostable sync node for lofi apps
 
@@ -307,13 +308,19 @@ async function cmdTicket(args: Args) {
       console.log("no tickets issued");
       return;
     }
+    // Last-seen comes from the daemon-owned sidecar; absent (never seen, or
+    // the node has not flushed yet) prints as "-".
+    const activity = args.dir ? await readTicketActivity(args.dir) : new Map<string, string>();
     for (const t of tickets) {
       // Lineage-aware: a derived ticket shows REVOKED once its parent is.
       const dead = isRevokedByLineage(t, tickets);
+      const lastSeen = activity.get(t.id) ?? "-";
       console.log(
         `${t.id}  ${dead ? "REVOKED" : "active "}  ${
           (t.scope ?? "sync").padEnd(9)
-        }  ${t.createdAt}  ${t.label ?? ""}${t.parentId ? `  [from ${t.parentId}]` : ""}`,
+        }  ${t.createdAt}  seen ${lastSeen}  ${t.label ?? ""}${
+          t.parentId ? `  [from ${t.parentId}]` : ""
+        }`,
       );
     }
     return;
