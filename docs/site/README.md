@@ -31,6 +31,8 @@ What the node gives you:
   data: [Provision a store](provision-a-store.md).
 - The mental model behind all of it — slices, shared stores, and why apps can't clobber each other:
   [Sliceable apps and shared stores](sliceable-apps-and-shared-stores.md).
+- What the store guarantees when it refuses a write, and how apps observe it:
+  [Write verdicts](write-verdicts.md).
 
 The app-side enrollment flow (pasting a ticket into a lofi app) is part of the framework docs:
 [Sync and recovery](/docs/sync-and-recovery).
