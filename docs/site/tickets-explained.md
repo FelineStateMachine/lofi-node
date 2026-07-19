@@ -54,11 +54,18 @@ less than it claims.
 
 ## The security posture, honestly
 
-An app ticket is a **bearer credential** with 256-bit entropy. Anyone holding it can sync as an
-authorized transport peer; identity and row-level permissions remain Jazz's local-first layer on
+An app ticket starts as a **bearer credential** with 256-bit entropy. Anyone holding it can sync as
+an authorized transport peer; identity and row-level permissions remain Jazz's local-first layer on
 top, enforced by the deployed policy, not by the ticket. Plain http is acceptable on a trusted LAN;
 beyond one, front the gate with TLS — installed PWAs generally require a secure origin anyway. Issue
 tickets per device or context so revocation is scoped.
+
+A derived sync ticket can additionally be **bound to the enrolling device**: the app offers a device
+public key at the scope-down exchange, and connecting then requires a fresh signature from that key
+— which never leaves the device — before the node accepts any traffic. A stolen ticket string alone
+no longer connects. What binding does not change: script running on the app's own origin can still
+drive the device key while the page is open, and the row-level permission story is still Jazz's.
+Binding defeats exfiltration of the credential, not live abuse of a compromised page.
 
 ## What the app does with it
 

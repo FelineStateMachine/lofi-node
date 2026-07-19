@@ -32,6 +32,17 @@ export interface AppTicket {
   node?: string;
 }
 
+/** A device public key bound to a ticket at derive time: connections on the
+ * ticket then require a proof-of-possession challenge, so the ticket string
+ * alone no longer connects. `alg` is carried per record so a future curve
+ * upgrade is a value change, not a format change. */
+export interface AppTicketPop {
+  alg: "ES256";
+  /** base64url DER SubjectPublicKeyInfo of the device's P-256 public key. */
+  spki: string;
+  boundAt: string;
+}
+
 /** Persisted record of an issued ticket — digest only, never the secret. */
 export interface AppTicketRecord {
   id: string;
@@ -44,6 +55,9 @@ export interface AppTicketRecord {
   secretHash: string;
   createdAt: string;
   revokedAt?: string;
+  /** Present when the ticket is possession-bound; absent records stay pure
+   * bearer, so tickets.json remains v1 and older nodes ignore the field. */
+  pop?: AppTicketPop;
 }
 
 function base64urlNoPad(bytes: Uint8Array): string {
@@ -194,12 +208,15 @@ export class AppTicketStore {
 
   /** Issue a ticket. `parentId` links a derived ticket to the ticket it was
    * minted from — the derived ticket then dies with its parent. The parent
-   * must be live at issuance. Records without a parent serialize exactly as
-   * before (the field is omitted), so tickets.json stays v1. */
+   * must be live at issuance. `pop` binds a device public key: the gate then
+   * requires a proof-of-possession exchange before any connection on the
+   * ticket. Records without a parent or pop serialize exactly as before (the
+   * fields are omitted), so tickets.json stays v1. */
   async issue(
     label?: string,
     scope: "sync" | "provision" = "sync",
     parentId?: string,
+    pop?: Omit<AppTicketPop, "boundAt">,
   ): Promise<{ record: AppTicketRecord; secret: string }> {
     await this.#reload();
     if (parentId !== undefined) {
@@ -217,6 +234,7 @@ export class AppTicketStore {
       parentId,
       secretHash,
       createdAt: new Date().toISOString(),
+      ...(pop ? { pop: { ...pop, boundAt: new Date().toISOString() } } : {}),
     };
     this.#tickets.push(record);
     await this.#persist();
@@ -254,5 +272,55 @@ export class AppTicketStore {
     return isRevokedByLineage(match, this.#tickets)
       ? { status: "revoked", record: match }
       : { status: "valid", record: match };
+  }
+}
+
+/** The exact bytes a device signs to prove possession: version line, app id,
+ * ticket id, and the challenge nonce, newline-joined. Binding the app and
+ * ticket ids prevents splicing a signature across stores or tickets; the
+ * single-use nonce prevents replay. */
+export function popMessage(appId: string, ticketId: string, nonce: string): Uint8Array {
+  return new TextEncoder().encode(`lofisync-pop-v1\n${appId}\n${ticketId}\n${nonce}`);
+}
+
+function fromBase64url(text: string): Uint8Array {
+  const b64 = text.replaceAll("-", "+").replaceAll("_", "/");
+  const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+  const bin = atob(padded);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+/** Import a bound device key's SPKI; throws on any malformed or wrong-curve
+ * key — used by the derive endpoint to reject bad bindings up front. */
+export async function importPopKey(spki: string): Promise<CryptoKey> {
+  return await crypto.subtle.importKey(
+    "spki",
+    fromBase64url(spki).buffer as ArrayBuffer,
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["verify"],
+  );
+}
+
+/** Verify a proof-of-possession signature (WebCrypto raw r||s ECDSA over
+ * SHA-256). False on any failure — malformed keys and signatures verify
+ * false rather than throwing, so the caller keeps one rejection path. */
+export async function verifyPopSignature(
+  spki: string,
+  message: Uint8Array,
+  signature: string,
+): Promise<boolean> {
+  try {
+    const key = await importPopKey(spki);
+    return await crypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" },
+      key,
+      fromBase64url(signature).buffer as ArrayBuffer,
+      message.buffer as ArrayBuffer,
+    );
+  } catch {
+    return false;
   }
 }
