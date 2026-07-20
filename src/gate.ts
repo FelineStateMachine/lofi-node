@@ -87,6 +87,35 @@ function unauthorized(): Response {
   });
 }
 
+const CORS_ALLOW_METHODS = "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS";
+
+function corsHeaders(req: Request): Headers {
+  const headers = new Headers({
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": CORS_ALLOW_METHODS,
+  });
+  const requestedHeaders = req.headers.get("access-control-request-headers");
+  if (requestedHeaders) headers.set("access-control-allow-headers", requestedHeaders);
+  if (req.headers.get("access-control-request-private-network") === "true") {
+    headers.set("access-control-allow-private-network", "true");
+  }
+  return headers;
+}
+
+function corsPreflight(req: Request): Response {
+  return new Response(null, { status: 204, headers: corsHeaders(req) });
+}
+
+function withCors(req: Request, response: Response): Response {
+  const headers = new Headers(response.headers);
+  for (const [name, value] of corsHeaders(req)) headers.set(name, value);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 /** Pump two OPEN (or opening) WebSockets both ways until either closes.
  * `backlog` holds client data that arrived before the upstream dial finished;
  * flushed before the listener attaches (same task — no interleave). */
@@ -383,30 +412,35 @@ export function startGate(options: GateOptions): Gate {
       const url = new URL(req.url);
       const isUpgrade = req.headers.get("upgrade")?.toLowerCase() === "websocket";
       const targetBase = options.target();
+      if (!isUpgrade && req.method === "OPTIONS") return corsPreflight(req);
+      const respond = (response: Response): Response =>
+        isUpgrade ? response : withCors(req, response);
 
       if (options.mode === "open") {
         // Open nodes still serve the preflight so lofi's store classifier
         // works against dev setups.
         if (url.pathname === "/store-status" && !isUpgrade) {
-          return storeStatus(targetBase, options.appId, options.adminSecret);
+          return respond(await storeStatus(targetBase, options.appId, options.adminSecret));
         }
         const path = url.pathname + url.search;
-        return isUpgrade
-          ? proxyWebSocket(req, targetBase, path).response
-          : proxyHttp(req, targetBase, path);
+        return respond(
+          isUpgrade
+            ? proxyWebSocket(req, targetBase, path).response
+            : await proxyHttp(req, targetBase, path),
+        );
       }
 
       // Ticket mode.
       if (url.pathname === "/health" && !isUpgrade) {
-        return proxyHttp(req, targetBase, "/health");
+        return respond(await proxyHttp(req, targetBase, "/health"));
       }
       const match = url.pathname.match(TICKET_PATH);
-      if (!match) return new Response("not found", { status: 404 });
+      if (!match) return respond(new Response("not found", { status: 404 }));
       const [, secret, rest] = match;
       const verdict = await options.store.verify(secret);
       if (verdict.status !== "valid") {
         debug("rejected", verdict.status, url.pathname.slice(0, 24));
-        return unauthorized();
+        return respond(unauthorized());
       }
       const scope = verdict.record.scope ?? "sync";
       seen(verdict.record.id);
@@ -419,26 +453,28 @@ export function startGate(options: GateOptions): Gate {
         // Liveness stays reachable with the bare secret — it reveals nothing
         // a valid ticket holder could not learn from the open /health route.
         if (strippedPath === "/health" && !isUpgrade) {
-          return proxyHttp(req, targetBase, "/health");
+          return respond(await proxyHttp(req, targetBase, "/health"));
         }
         if (strippedPath === "/pop/challenge" && !isUpgrade) {
           if (req.method !== "POST") {
-            return new Response("method not allowed", { status: 405 });
+            return respond(new Response("method not allowed", { status: 405 }));
           }
           const challenge = mintChallenge(verdict.record.id);
-          return new Response(
-            JSON.stringify({
-              v: 1,
-              id: challenge.id,
-              nonce: challenge.nonce,
-              expiresIn: CHALLENGE_TTL_MS / 1000,
-            }),
-            { headers: { "content-type": "application/json" } },
+          return respond(
+            new Response(
+              JSON.stringify({
+                v: 1,
+                id: challenge.id,
+                nonce: challenge.nonce,
+                expiresIn: CHALLENGE_TTL_MS / 1000,
+              }),
+              { headers: { "content-type": "application/json" } },
+            ),
           );
         }
         if (strippedPath === "/pop/answer" && !isUpgrade) {
           if (req.method !== "POST") {
-            return new Response("method not allowed", { status: 405 });
+            return respond(new Response("method not allowed", { status: 405 }));
           }
           let body: { id?: unknown; sig?: unknown } = {};
           try {
@@ -449,25 +485,27 @@ export function startGate(options: GateOptions): Gate {
           const token = await answerChallenge(verdict.record.id, verdict.record.pop, body);
           if (token === null) {
             debug("rejected pop answer", verdict.record.id);
-            return unauthorized();
+            return respond(unauthorized());
           }
           debug("pop verified", verdict.record.id);
-          return new Response(
-            JSON.stringify({ v: 1, connect: token, expiresIn: CONNECT_TOKEN_TTL_MS / 1000 }),
-            { headers: { "content-type": "application/json" } },
+          return respond(
+            new Response(
+              JSON.stringify({ v: 1, connect: token, expiresIn: CONNECT_TOKEN_TTL_MS / 1000 }),
+              { headers: { "content-type": "application/json" } },
+            ),
           );
         }
         const connect = strippedPath.match(CONNECT_PATH);
         if (!connect) {
           debug("rejected pop-bound bare path", verdict.record.id);
-          return unauthorized();
+          return respond(unauthorized());
         }
         const [, connectSecret, connectRest] = connect;
         const tokenDigest = await hashSecret(connectSecret);
         const token = connectTokens.get(tokenDigest);
         if (!token || token.ticketId !== verdict.record.id || token.expiresAt < Date.now()) {
           debug("rejected connect token", verdict.record.id);
-          return unauthorized();
+          return respond(unauthorized());
         }
         // Sliding lifetime: each authenticated use extends the token.
         token.expiresAt = Date.now() + CONNECT_TOKEN_TTL_MS;
@@ -476,13 +514,15 @@ export function startGate(options: GateOptions): Gate {
         // The exchange only exists for bound tickets; a bearer ticket probing
         // it is a client-configuration error, and the path must never leak
         // upstream.
-        return new Response(JSON.stringify({ error: "pop_not_bound" }), {
-          status: 400,
-          headers: { "content-type": "application/json" },
-        });
+        return respond(
+          new Response(JSON.stringify({ error: "pop_not_bound" }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          }),
+        );
       }
       if (strippedPath === "/store-status" && !isUpgrade) {
-        return storeStatus(targetBase, options.appId, options.adminSecret);
+        return respond(await storeStatus(targetBase, options.appId, options.adminSecret));
       }
       // Scope-down exchange: a provision ticket mints a derived sync ticket
       // (the lofi app persists that one at rest, keeping the provision ticket
@@ -492,10 +532,10 @@ export function startGate(options: GateOptions): Gate {
       if (strippedPath === "/derive-sync-ticket" && !isUpgrade) {
         if (scope !== "provision") {
           debug("rejected sync-scope on derive", verdict.record.id);
-          return unauthorized();
+          return respond(unauthorized());
         }
         if (req.method !== "POST") {
-          return new Response("method not allowed", { status: 405 });
+          return respond(new Response("method not allowed", { status: 405 }));
         }
         let requested: string | undefined;
         let deviceKey: { alg?: unknown; spki?: unknown } | undefined;
@@ -513,18 +553,22 @@ export function startGate(options: GateOptions): Gate {
         let pop: { alg: "ES256"; spki: string } | undefined;
         if (deviceKey !== undefined) {
           if (deviceKey.alg !== "ES256" || typeof deviceKey.spki !== "string") {
-            return new Response(JSON.stringify({ error: "invalid_device_key" }), {
-              status: 400,
-              headers: { "content-type": "application/json" },
-            });
+            return respond(
+              new Response(JSON.stringify({ error: "invalid_device_key" }), {
+                status: 400,
+                headers: { "content-type": "application/json" },
+              }),
+            );
           }
           try {
             await importPopKey(deviceKey.spki);
           } catch {
-            return new Response(JSON.stringify({ error: "invalid_device_key" }), {
-              status: 400,
-              headers: { "content-type": "application/json" },
-            });
+            return respond(
+              new Response(JSON.stringify({ error: "invalid_device_key" }), {
+                status: 400,
+                headers: { "content-type": "application/json" },
+              }),
+            );
           }
           pop = { alg: "ES256", spki: deviceKey.spki };
         }
@@ -541,36 +585,40 @@ export function startGate(options: GateOptions): Gate {
           node: options.nodeTicket,
         });
         debug("derived sync ticket", derived.record.id, "from", parent.id, pop ? "pop" : "bearer");
-        return new Response(
-          JSON.stringify({
-            v: 1,
-            id: derived.record.id,
-            ticket,
-            ...(pop ? { pop: true } : {}),
-          }),
-          { headers: { "content-type": "application/json" } },
+        return respond(
+          new Response(
+            JSON.stringify({
+              v: 1,
+              id: derived.record.id,
+              ticket,
+              ...(pop ? { pop: true } : {}),
+            }),
+            { headers: { "content-type": "application/json" } },
+          ),
         );
       }
       // Admin/catalogue-mutating routes need provision scope; a sync ticket
       // gets the SAME 401 shape as an invalid ticket (nothing to enumerate).
       if (ADMIN_PATH.test(strippedPath) && scope !== "provision") {
         debug("rejected sync-scope on admin path", verdict.record.id);
-        return unauthorized();
+        return respond(unauthorized());
       }
       const path = strippedPath + url.search;
       debug(isUpgrade ? "ws" : req.method, path, "ticket", verdict.record.id, scope);
       if (isUpgrade) {
         const { response, socket } = proxyWebSocket(req, targetBase, path);
         track(verdict.record.id, socket);
-        return response;
+        return respond(response);
       }
       // The admin secret only ever originates from the node: inbound headers
       // are stripped; provision-scoped requests get config's secret injected
       // (on catalogue reads too — the merge flow fetches the head schema
       // verbatim without ever holding the secret client-side).
-      return proxyHttp(req, targetBase, path, {
-        "x-jazz-admin-secret": scope === "provision" ? options.adminSecret : null,
-      });
+      return respond(
+        await proxyHttp(req, targetBase, path, {
+          "x-jazz-admin-secret": scope === "provision" ? options.adminSecret : null,
+        }),
+      );
     },
   );
 
