@@ -119,6 +119,46 @@ Deno.test({
 });
 
 Deno.test({
+  name: "gate: browser HTTP requests receive CORS preflight and response headers",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: () =>
+    withGate("ticket", async ({ gateUrl, store }) => {
+      const { secret } = await store.issue("browser", "provision");
+      const url = `${gateUrl}/t/${secret}/derive-sync-ticket`;
+      const preflight = await fetch(url, {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://demo.lofi.host",
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "content-type, x-client-version",
+          "access-control-request-private-network": "true",
+        },
+      });
+      assertEquals(preflight.status, 204);
+      assertEquals(preflight.headers.get("access-control-allow-origin"), "*");
+      assert(
+        preflight.headers.get("access-control-allow-methods")?.includes("POST"),
+        "preflight must allow POST",
+      );
+      assertEquals(
+        preflight.headers.get("access-control-allow-headers"),
+        "content-type, x-client-version",
+      );
+      assertEquals(preflight.headers.get("access-control-allow-private-network"), "true");
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { origin: "https://demo.lofi.host", "content-type": "application/json" },
+        body: "{}",
+      });
+      assertEquals(response.status, 200);
+      assertEquals(response.headers.get("access-control-allow-origin"), "*");
+      await response.body?.cancel();
+    }),
+});
+
+Deno.test({
   name: "gate: WS round-trip with subprotocol echo and path stripping",
   sanitizeOps: false,
   sanitizeResources: false,
